@@ -1,0 +1,58 @@
+\chapter{Introduction}
+
+\section{Role of Information Technology in Modern Supply Chains}
+A supply chain is the network of organisations, facilities and activities that move a product from raw material to the final customer: sourcing, production, warehousing, transportation and distribution \cite{chopra2016}. Competitive advantage increasingly depends not on individual firms but on how well this network is \emph{coordinated} \cite{christopher2016}. Information technology is the mechanism of that coordination. It provides:
+
+\begin{itemize}
+  \item \textbf{Visibility} --- a shared, real-time view of orders, inventory, shipments and capacity across partners, replacing phone calls and spreadsheets.
+  \item \textbf{Synchronisation} --- planning tools that align the activities of independent parties (suppliers, carriers, warehouses) to a common schedule.
+  \item \textbf{Automation} --- rules executed by software (approvals, alerts, exception handling) that reduce manual effort and errors.
+  \item \textbf{Measurement} --- data captured at every event that turns into key performance indicators (KPIs) such as on-time delivery, utilisation and lead time, enabling continuous improvement.
+\end{itemize}
+
+Typical supply-chain information systems include Enterprise Resource Planning (ERP), Warehouse Management Systems (WMS), Transportation Management Systems (TMS) and Yard Management Systems (YMS) \cite{ivanov2019}. Between the TMS (which plans \emph{when} a truck travels) and the WMS (which plans \emph{what} happens inside the building) lies a frequently neglected handover point: the \textbf{loading dock}. Dock appointment scheduling systems fill that gap by agreeing, in advance, the exact time and door at which each truck will be loaded or unloaded.
+
+\section{Problem Statement}
+Many warehouses and distribution centres --- especially small and mid-sized ones --- still manage inbound deliveries and outbound pickups by telephone, e-mail and whiteboards, or allow carriers to arrive whenever convenient. This leads to well-documented operational problems:
+
+\begin{enumerate}
+  \item \textbf{Peaks and congestion.} Carriers prefer the same morning and afternoon hours. Trucks queue in the yard and on public roads while docks are idle at other times.
+  \item \textbf{Detention and wasted capacity.} Drivers wait unpaid or charge detention fees; dock labour cannot be planned against a known workload.
+  \item \textbf{Double-booking and mismatches.} Two carriers are promised the same door, or a refrigerated (reefer) or hazardous load is sent to a door that cannot handle it.
+  \item \textbf{No accountability.} Without arrival timestamps there is no objective record of which carriers are late or fail to show up, so carrier performance cannot be managed.
+  \item \textbf{No data for decisions.} Managers cannot answer basic questions such as ``How utilised are our docks?'', ``Which hours are busiest?'' or ``What is our average truck turnaround time?''
+\end{enumerate}
+
+\keybox{\textbf{Problem statement.} Design and deploy a web-based system that lets warehouses publish dock capacity and lets carriers self-book compatible, conflict-free appointments, while capturing yard events to measure and improve dock utilisation, punctuality and turnaround --- securely, for many warehouses and carriers on one platform.}
+
+\section{Objectives}
+\begin{enumerate}
+  \item To build a \textbf{multi-tenant} platform where each warehouse controls its own docks, rules and approved carriers, and carriers book only where approved.
+  \item To provide a \textbf{configurable scheduling engine}: operating hours, slot length (15/30/60/90 minutes), turnover buffer, holidays (blackout dates) and dock maintenance windows.
+  \item To \textbf{match loads to docks} by movement direction (inbound/outbound), trailer type (dry van, reefer, flatbed, container) and hazmat certification.
+  \item To \textbf{guarantee} that the capacity of a dock slot is never exceeded, even under simultaneous requests on multiple servers.
+  \item To support realistic carrier workflows: \textbf{recurring} weekly appointments, \textbf{rescheduling}, and an automatic \textbf{waitlist}.
+  \item To digitise \textbf{yard execution} (gate check-in, dock start, completion) and automatically detect \textbf{late arrivals and no-shows}.
+  \item To compute a \textbf{carrier reliability score} and operational \textbf{KPIs} with dashboards, heatmaps and CSV/PDF reports.
+  \item To keep a complete \textbf{audit trail} and send \textbf{notifications} (in-app, e-mail, SMS) for every important event.
+  \item To deploy the system on the \textbf{cloud} and validate it with automated tests and a simulation study.
+\end{enumerate}
+
+\section{Scope and Limitations}
+\subsection*{Scope}
+\begin{itemize}
+  \item Users: warehouse/DC managers (one per warehouse), carriers (transport companies) and a platform super administrator.
+  \item Functions: site and dock configuration, appointment booking and lifecycle, waitlist, yard events, notifications, audit, analytics and exports, as listed in the objectives.
+  \item Deployment: a single cloud web service (Render) with a managed MongoDB Atlas database, accessible from any browser.
+  \item Demo mode: a realistic dataset (two DCs, five typed docks at the Chennai DC, six carriers, about five weeks of history) for evaluation and presentation.
+\end{itemize}
+
+\subsection*{Limitations}
+\begin{itemize}
+  \item \textbf{No WMS/TMS integration.} Purchase orders and advance shipping notices (ASN) are entered as references; they are not fetched from an ERP.
+  \item \textbf{Manual gate events.} Check-in and completion are recorded by staff clicking buttons; there is no automatic number-plate recognition or IoT sensor input.
+  \item \textbf{Fixed-length slots.} All appointments at a site have the same length; load-dependent durations (e.g.\ 90 minutes for a full container) are not yet modelled.
+  \item \textbf{Super administrator.} The role exists and is protected, but it has no dedicated user interface yet.
+  \item \textbf{Simulated evaluation.} The dataset and the before/after comparison are generated or simulated, not measured at a real warehouse.
+  \item \textbf{Free-tier hosting.} The free cloud instance sleeps when idle (about 50~s cold start) and runs on a small CPU, which affects response times.
+\end{itemize}

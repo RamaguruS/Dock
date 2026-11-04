@@ -1,0 +1,118 @@
+\documentclass[12pt,a4paper,oneside]{report}
+
+% ---------------------------------------------------------------- packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[top=2.3cm,bottom=2.3cm,left=2.5cm,right=2.2cm]{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage[table]{xcolor}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric,shapes.multipart,arrows.meta,positioning,fit,calc,backgrounds}
+\usepackage[hidelinks]{hyperref}
+
+\input{../meta.tex}
+\input{../diagrams/styles.tex}
+
+\graphicspath{{../figures/}}
+\setstretch{1.2}
+\setlist{itemsep=2pt,topsep=4pt}
+\captionsetup{font=small,labelfont=bf}
+
+% ---------------------------------------------------------------- colours
+\definecolor{codebg}{HTML}{F8FAFC}
+\definecolor{codekw}{HTML}{7C3AED}
+\definecolor{codestr}{HTML}{047857}
+\definecolor{codecom}{HTML}{6B7280}
+
+% ---------------------------------------------------------------- headings
+\titleformat{\chapter}[display]{\normalfont\huge\bfseries\color{ink}}{\large\color{brand}CHAPTER \thechapter}{6pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-20pt}{18pt}
+\titleformat{\section}{\normalfont\Large\bfseries\color{ink}}{\thesection}{0.8em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries\color{ink}}{\thesubsection}{0.8em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{muted}\ProjectShortTitle}
+\fancyhead[R]{\small\color{muted}\leftmark}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\thepage}\renewcommand{\headrulewidth}{0pt}}
+
+% ---------------------------------------------------------------- code listings
+\lstdefinelanguage{TypeScript}{
+  keywords={async,await,break,case,catch,class,const,continue,default,do,else,export,extends,
+    finally,for,function,if,import,in,interface,let,new,of,return,switch,throw,try,type,while,
+    true,false,null,undefined,typeof,instanceof,void},
+  sensitive=true,
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]',
+  morestring=[b]",
+  morestring=[b]`,
+}
+\lstset{
+  language=TypeScript,
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{codekw}\bfseries,
+  stringstyle=\color{codestr},
+  commentstyle=\color{codecom}\itshape,
+  backgroundcolor=\color{codebg},
+  frame=single, rulecolor=\color{black!15},
+  numbers=left, numberstyle=\tiny\color{muted}, numbersep=6pt,
+  breaklines=true, breakatwhitespace=true, columns=fullflexible, keepspaces=true,
+  showstringspaces=false, tabsize=2, xleftmargin=1.5em, framexleftmargin=1.5em,
+  inputencoding=utf8, extendedchars=true,
+  literate={→}{{$\rightarrow$}}1 {←}{{$\leftarrow$}}1 {×}{{$\times$}}1 {÷}{{$\div$}}1
+           {·}{{$\cdot$}}1 {—}{{---}}1 {–}{{--}}1 {…}{{...}}1 {½}{{$\frac12$}}1 {≥}{{$\geq$}}1,
+}
+
+% ---------------------------------------------------------------- helpers
+\newcommand{\screenshot}[3]{% file, caption, label
+  \begin{figure}[H]\centering
+  \fbox{\includegraphics[width=0.86\textwidth]{#1}}
+  \caption{#2}\label{#3}\end{figure}}
+\newcommand{\keybox}[1]{\begin{center}\colorbox{boxbg}{\parbox{0.92\textwidth}{\vspace{4pt}#1\vspace{4pt}}}\end{center}}
+
+\begin{document}
+
+% ================================================================= front matter
+\pagenumbering{roman}
+\input{frontmatter}
+
+\tableofcontents
+\listoffigures
+
+\cleardoublepage
+\pagenumbering{arabic}
+
+\input{chapters/01_introduction}
+\input{chapters/02_background}
+\input{chapters/03_design}
+\input{chapters/04_modules}
+\input{chapters/05_implementation}
+\input{chapters/06_screens}
+\input{chapters/07_testing}
+\input{chapters/08_results}
+\input{chapters/09_conclusion}
+
+\input{references}
+
+\appendix
+\input{chapters/appendix_code}
+
+\end{document}

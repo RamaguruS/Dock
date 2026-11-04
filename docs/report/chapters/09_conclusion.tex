@@ -1,0 +1,57 @@
+\chapter{Benefits, Conclusion and Future Work}
+
+\section{Benefits and Real-World Applications}
+\begin{table}[H]
+\centering
+\small
+\caption{Supply-chain impact of SmartDock}
+\label{tab:benefits}
+\begin{tabularx}{\textwidth}{>{\bfseries\raggedright\arraybackslash}p{2.6cm}X}
+\toprule
+Dimension & Impact \\
+\midrule
+Cost & Less truck waiting means lower detention charges and driver overtime; labour can be rostered to the known appointment load (heatmap, busiest hours) instead of covering unpredictable peaks; free and open-source software avoids licence fees. \\
+Visibility & Both sides see the same schedule in real time: carriers see free capacity and status; managers see every truck's position (expected, in yard, at door, departed) and live KPIs. \\
+Speed & Self-service booking replaces phone and e-mail; the simulation indicates that yard waiting falls from about 19 minutes to about 1 minute per truck; waitlist auto-assignment refills cancelled capacity without manual effort. \\
+Traceability & Every appointment carries PO/ASN references, timestamps for each yard event and a complete audit trail, supporting detention disputes, compliance and root-cause analysis. \\
+Reliability & Conflict-free scheduling (including dock compatibility and hazmat safety) and a carrier reliability score that creates accountability and supports carrier selection. \\
+Sustainability & Shorter queues mean less engine idling and local emissions near the site \cite{giuliano2007}. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Applications.} Distribution centres of retailers and e-commerce companies (inbound supplier deliveries, outbound store or courier pickups); cold-chain warehouses (reefer-only doors and pharma 2--8\,$^{\circ}$C loads); chemical and fuel depots (hazmat bays); third-party logistics (3PL) providers running several client warehouses on one platform (multi-tenancy); manufacturing plants receiving just-in-time inbound parts; and, with minor changes, container freight stations and inland container depots.
+
+\section{Conclusion}
+This project designed, implemented, tested and deployed \textbf{SmartDock}, a multi-tenant dock appointment scheduling and yard management system. Mapping back to the objectives:
+\begin{itemize}
+  \item Multi-tenancy with per-warehouse carrier approval and strict tenant isolation was implemented and verified by automated tests.
+  \item A configurable scheduling engine supports slot lengths of 15--90 minutes, turnover buffers, holidays and maintenance windows across time zones.
+  \item Loads are matched to doors by direction, trailer type and hazmat certification.
+  \item Slot capacity is guaranteed under concurrency across multiple servers; a controlled experiment confirmed the guarantee and demonstrated the failure of the naive approach.
+  \item Recurring series, rescheduling and an automatic FIFO waitlist cover realistic carrier needs.
+  \item Yard events are digitised, late arrivals and no-shows are detected automatically, and carriers receive a reliability score.
+  \item Managers obtain KPIs, heatmaps, scorecards, CSV/PDF reports and a gate sheet; every action is audited and notified.
+  \item The system is live on the cloud and passes 58 end-to-end checks.
+\end{itemize}
+SmartDock shows that a focused information system at the warehouse--transport interface can convert an uncontrolled, phone-based process into a measured, collaborative one, improving cost, visibility, speed and traceability in the supply chain.
+
+\section{Project Links}
+\begin{tabular}{@{}ll@{}}
+\textbf{Live system} & \url{\LiveURL} \\
+\textbf{Source code (GitHub)} & \url{\GitHubURL} \\
+\textbf{Demo logins} & \texttt{admin@smartdock.demo}, \texttt{carrier@smartdock.demo} (password \texttt{Demo@123}) \\
+\textbf{Run locally} & \texttt{npm run dev:demo} (server) after building the client \\
+\textbf{Run tests} & \texttt{npm run verify:critical} (58 end-to-end checks) \\
+\end{tabular}
+
+\section{Future Enhancements}
+\begin{itemize}
+  \item \textbf{AI/ML:} predict no-show probability and arrival delay per carrier, lane and time of day; recommend slots and automatically overbook slightly where no-shows are likely; forecast daily inbound volume for labour planning.
+  \item \textbf{Optimisation:} automatic assignment of trucks to doors (minimising yard wait and travel inside the building) and load-dependent slot lengths.
+  \item \textbf{IoT and computer vision:} automatic gate check-in by number-plate recognition, RFID or GPS geofencing; dock-door sensors for real dock start and end times; reefer temperature monitoring.
+  \item \textbf{Integration:} import purchase orders and ASNs from ERP/WMS, push appointments to TMS, and provide webhooks and a public API for carriers.
+  \item \textbf{Mobile app:} a driver app with turn-by-turn directions to the assigned door, digital proof of delivery and live status; installable as a progressive web app.
+  \item \textbf{Commercial features:} detention and no-show fee calculation, carrier contracts and service-level agreements, multi-language support.
+  \item \textbf{Scalability and operations:} real-time updates with WebSockets instead of polling, caching of analytics, a super-administrator console for 3PL operators, horizontal scaling on a paid plan, and automated CI tests on every commit.
+\end{itemize}

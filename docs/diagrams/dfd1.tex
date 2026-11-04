@@ -1,0 +1,24 @@
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \node[proc] (p1) at (0,0) {1.0\\Manage\\access};
+  \node[proc] (p2) at (5,0) {2.0\\Configure\\site \& docks};
+  \node[proc] (p3) at (10,0) {3.0\\Schedule\\appointments};
+  \node[proc] (p4) at (10,-4.6) {4.0\\Execute\\yard};
+  \node[proc] (p5) at (5,-4.6) {5.0\\Notify \&\\audit};
+  \node[proc] (p6) at (0,-4.6) {6.0\\Analyse\\performance};
+  \node[store] (d1) at (0,-2.3) {D1 Users / Access};
+  \node[store] (d2) at (5,-2.3) {D2 Warehouses / Docks};
+  \node[store] (d3) at (10,-2.3) {D3 Bookings};
+  \node[store] (d4) at (13.3,-2.3) {D4 Waitlist};
+  \node[store] (d5) at (5,-6.9) {D5 Audit / Notifications};
+  \draw[flow] (p1) -- (d1);
+  \draw[flow] (p2) -- (d2);
+  \draw[flow] (d2) -- node[above, sloped]{rules, docks} (p3);
+  \draw[flow] (d1) -- node[above, sloped, pos=0.35]{approved access} (p3);
+  \draw[flow] (p3) -- (d3);
+  \draw[flow] (p3.east) -| (d4.north);
+  \draw[flow] (d4.south) |- node[below, pos=0.75]{auto-assign} (p4.east);
+  \draw[flow] (d3) -- (p4);
+  \draw[flow] (p4) -- node[above]{events} (p5);
+  \draw[flow] (p5) -- (d5);
+  \draw[flow] (d3.south west) -- node[above, sloped]{bookings, timestamps} (p6.north east);
+\end{tikzpicture}

@@ -1,0 +1,17 @@
+\begin{tikzpicture}[node distance=0.45cm, every node/.style={font=\scriptsize}]
+  \tikzset{fb/.style={draw=ink!70, rounded corners=2pt, fill=white, align=center, minimum width=6.2cm, minimum height=0.65cm},
+           fd/.style={diamond, aspect=2.6, draw=brand, fill=boxbg, align=center, inner sep=1pt},
+           fa/.style={-{Stealth[length=2mm]}, draw=ink!70}}
+  \node[fb] (a) {Validate slot: open day, on grid, compatible dock,\\not in maintenance, in the future};
+  \node[fb, below=of a] (b) {Acquire in-process lock for this dock};
+  \node[fb, below=of b] (c) {BEGIN transaction};
+  \node[fb, below=of c] (d) {Increment \texttt{dock.bookingLockVersion} (write lock)};
+  \node[fb, below=of d] (e) {Count active bookings overlapping the slot};
+  \node[fd, below=of e] (f) {count $<$ capacity?};
+  \node[fb, below=0.5cm of f] (g) {Insert booking (PENDING); COMMIT};
+  \node[fb, right=0.8cm of f, minimum width=3.0cm] (h) {ABORT\\$\rightarrow$ HTTP 409 (full)};
+  \node[fb, left=0.8cm of d, minimum width=3.0cm, fill=gray!8] (r) {Write conflict:\\driver retries};
+  \draw[fa] (a) -- (b); \draw[fa] (b) -- (c); \draw[fa] (c) -- (d); \draw[fa] (d) -- (e); \draw[fa] (e) -- (f);
+  \draw[fa] (f) -- node[right]{yes} (g); \draw[fa] (f) -- node[above]{no} (h);
+  \draw[fa, dashed] (d.west) -- (r.east); \draw[fa, dashed] (r.north) |- (c.west);
+\end{tikzpicture}

@@ -1,0 +1,172 @@
+{
+  "kpis": {
+    "totalAppointments": 910,
+    "completed": 799,
+    "dockUtilization": 40,
+    "offeredCapacity": 2184,
+    "onTimeRate": 78.6,
+    "noShowRate": 8.6,
+    "cancellationRate": 4,
+    "avgTurnaroundMinutes": 57,
+    "avgYardWaitMinutes": 17,
+    "avgDockMinutes": 40,
+    "palletsHandled": 15151,
+    "avgDailyAppointments": 30.3
+  },
+  "range": {
+    "from": "2026-10-06",
+    "to": "2026-11-04",
+    "days": 30,
+    "timezone": "Asia/Kolkata"
+  },
+  "byStatus": {
+    "COMPLETED": 799,
+    "CANCELLED": 36,
+    "NO_SHOW": 75
+  },
+  "busiestHours": [
+    {
+      "hour": 10,
+      "label": "10:00",
+      "count": 105
+    },
+    {
+      "hour": 15,
+      "label": "15:00",
+      "count": 101
+    },
+    {
+      "hour": 9,
+      "label": "09:00",
+      "count": 100
+    },
+    {
+      "hour": 14,
+      "label": "14:00",
+      "count": 91
+    },
+    {
+      "hour": 11,
+      "label": "11:00",
+      "count": 90
+    }
+  ],
+  "perDock": [
+    {
+      "dockName": "D-01 Inbound Dry",
+      "utilization": 36.5,
+      "appointments": 228,
+      "capacity": 624,
+      "avgDockMinutes": 39
+    },
+    {
+      "dockName": "D-02 Cold Chain (Reefer)",
+      "utilization": 44.6,
+      "appointments": 139,
+      "capacity": 312,
+      "avgDockMinutes": 48
+    },
+    {
+      "dockName": "D-03 Outbound Dispatch",
+      "utilization": 37,
+      "appointments": 231,
+      "capacity": 624,
+      "avgDockMinutes": 38
+    },
+    {
+      "dockName": "D-04 Hazmat Bay",
+      "utilization": 44.6,
+      "appointments": 139,
+      "capacity": 312,
+      "avgDockMinutes": 36
+    },
+    {
+      "dockName": "D-05 Flatbed / Oversize",
+      "utilization": 43.9,
+      "appointments": 137,
+      "capacity": 312,
+      "avgDockMinutes": 39
+    }
+  ],
+  "carriers": [
+    {
+      "name": "Deccan Transport Co",
+      "appointments": 344,
+      "onTimeRate": 65.4,
+      "noShows": 29,
+      "reliabilityScore": 76,
+      "tier": "B"
+    },
+    {
+      "name": "Swift Freight Lines",
+      "appointments": 344,
+      "onTimeRate": 93,
+      "noShows": 10,
+      "reliabilityScore": 93,
+      "tier": "A"
+    },
+    {
+      "name": "Metro Haulers",
+      "appointments": 135,
+      "onTimeRate": 58.2,
+      "noShows": 34,
+      "reliabilityScore": 61,
+      "tier": "C"
+    },
+    {
+      "name": "Coastal Cold Chain",
+      "appointments": 60,
+      "onTimeRate": 91.4,
+      "noShows": 0,
+      "reliabilityScore": 93,
+      "tier": "A"
+    },
+    {
+      "name": "SafeChem Logistics",
+      "appointments": 27,
+      "onTimeRate": 88,
+      "noShows": 2,
+      "reliabilityScore": 89,
+      "tier": "B"
+    }
+  ],
+  "latency": {
+    "Health check": {
+      "median_ms": 666,
+      "p90_ms": 757
+    },
+    "Slot availability (1 day)": {
+      "median_ms": 1338,
+      "p90_ms": 1433
+    },
+    "Yard schedule (1 day)": {
+      "median_ms": 1575,
+      "p90_ms": 1904
+    },
+    "Analytics (30 days)": {
+      "median_ms": 4300,
+      "p90_ms": 6719
+    }
+  },
+  "simulation": {
+    "before": {
+      "mean_wait_min": 19.4,
+      "p90_wait_min": 54.9,
+      "max_wait_min": 116.3,
+      "share_wait_over_30_pct": 27.7,
+      "peak_avg_queue": 7.0
+    },
+    "after": {
+      "mean_wait_min": 1.0,
+      "p90_wait_min": 0.0,
+      "max_wait_min": 37.7,
+      "share_wait_over_30_pct": 0.3,
+      "peak_avg_queue": 0.4
+    },
+    "params": {
+      "docks": 6,
+      "trucks_per_day": 60,
+      "days": 60
+    }
+  }
+}

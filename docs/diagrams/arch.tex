@@ -1,0 +1,29 @@
+\begin{tikzpicture}[node distance=0.35cm and 0.3cm]
+  % users
+  \node[blk, minimum width=3.1cm] (u1) {Warehouse / DC\\manager};
+  \node[blk, minimum width=3.1cm, right=0.5cm of u1] (u2) {Carrier\\(transporter)};
+  \node[blk, minimum width=3.1cm, right=0.5cm of u2] (u3) {Gate / security\\staff};
+  % presentation
+  \node[blk, minimum width=11cm, below=0.9cm of u2, fill=boxbg] (spa) {\textbf{React 19 single-page application} (Vite, Tailwind CSS, React Query)\\[1pt]\scriptsize Control tower $\cdot$ Carrier portal $\cdot$ Booking wizard $\cdot$ Analytics $\cdot$ Gate sheet $\cdot$ CSV/PDF export};
+  \draw[arr] (u1) -- (u1 |- spa.north);
+  \draw[arr] (u2) -- (spa.north);
+  \draw[arr] (u3) -- (u3 |- spa.north);
+  % api
+  \node[blk, minimum width=11cm, below=0.9cm of spa, align=left, text width=10.6cm] (mw) {\textbf{Security middleware:} rate limiter $\rightarrow$ JWT authentication $\rightarrow$ role check (RBAC) $\rightarrow$ tenant / warehouse-access check};
+  \node[blk, minimum width=11cm, below=0.25cm of mw, align=left, text width=10.6cm] (ctl) {\textbf{Controllers (REST):} auth, warehouses, docks, bookings, waitlist, vendors, analytics, audit-logs, notifications, demo};
+  \node[blk, minimum width=11cm, below=0.25cm of ctl, align=left, text width=10.6cm] (svc) {\textbf{Services:} scheduling engine (slot grid, availability, atomic reservation) $\cdot$ waitlist $\cdot$ reliability scoring $\cdot$ notifications $\cdot$ audit $\cdot$ background jobs (no-show, expiry, reminders)};
+  \node[blk, minimum width=11cm, below=0.25cm of svc, align=left, text width=10.6cm] (mdl) {\textbf{Data access:} Mongoose models with schema validation and indexes};
+  \begin{scope}[on background layer]
+    \coordinate (apitop) at ($(mw.north)+(0,0.42)$);
+    \node[layer, fit=(apitop)(mw)(ctl)(svc)(mdl), label={[lbl, anchor=north west, xshift=3pt, yshift=-3pt]north west:Node.js + Express API (TypeScript) on Render}] (api) {};
+  \end{scope}
+  \draw[darr] (spa.south) -- node[left, font=\scriptsize]{HTTPS / JSON (REST)} (api.north -| spa.south);
+  % db
+  \node[blk, minimum width=6cm, below=1.0cm of api, fill=gray!8] (db) {\textbf{MongoDB Atlas} (replica set)\\\scriptsize users $\cdot$ warehouses $\cdot$ docks $\cdot$ bookings $\cdot$ vendoraccesses\\\scriptsize waitlistentries $\cdot$ auditlogs $\cdot$ notifications};
+  \draw[darr] (api.south -| db.north) -- node[right, font=\scriptsize]{transactions} (db.north);
+  % external
+  \node[blk, right=0.4cm of db, minimum width=2.6cm, font=\scriptsize] (ext) {Resend (e-mail)\\Twilio (SMS)};
+  \draw[arr] (api.south -| ext.north) -- (ext.north);
+  \node[blk, left=0.4cm of db, minimum width=2.6cm, font=\scriptsize] (ci) {GitHub $\rightarrow$\\Render CI/CD};
+  \draw[arr] (ci.north) -- (api.south -| ci.north);
+\end{tikzpicture}

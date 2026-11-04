@@ -1,0 +1,62 @@
+\chapter{Implementation Details}\label{ch:impl}
+This chapter explains the key algorithms. Complete source code is available in the GitHub repository; the most important excerpts are reproduced in Appendix~\ref{app:code}.
+
+\section{Project Structure}
+\begin{itemize}
+  \item \texttt{client/} --- React application: \texttt{pages/admin} (control-tower tabs and gate sheet), \texttt{pages/vendor} (carrier portal and booking wizard), \texttt{components} (slot picker, reschedule dialog, notification bell, UI kit), \texttt{lib} (formatting and CSV/PDF export).
+  \item \texttt{server/src/models} --- Mongoose schemas: User, Warehouse, Dock, Booking, VendorAccess, WaitlistEntry, AuditLog, Notification.
+  \item \texttt{server/src/services} --- business logic: \texttt{scheduling}, \texttt{waitlist}, \texttt{reliability}, \texttt{notifications}, \texttt{audit}, \texttt{jobs}, \texttt{seed}.
+  \item \texttt{server/src/controllers} and \texttt{routes} --- the REST API; \texttt{middleware} --- authentication, roles and tenant access.
+  \item \texttt{render.yaml} --- infrastructure-as-code definition of the cloud deployment.
+\end{itemize}
+
+\section{Time-Zone-Correct Slot Generation}
+Warehouses operate in local time, but all instants are stored in UTC so that sites in different zones and daylight-saving transitions are handled correctly. Given a local date $d$, the engine:
+\begin{enumerate}
+  \item returns \emph{closed} if $d$ is a blackout date or the weekday is closed;
+  \item converts opening time $o$ and closing time $c$ to minutes and generates slots
+  \[ s_k = o + k\,(L + B), \qquad e_k = s_k + L, \qquad \text{while } e_k \le c, \]
+  where $L$ is the slot length and $B$ the turnover buffer (e.g.\ $L=30$, $B=15$ gives 08:00--08:30, 08:45--09:15, \ldots);
+  \item converts each local start and end to an exact UTC instant using the IANA time-zone database. Because a local time's UTC offset depends on the date, the conversion starts from a guess and corrects it by the observed difference until it converges (at most three iterations; Listing~\ref{lst:tz}).
+\end{enumerate}
+For availability, each slot of each compatible door is then checked against existing active bookings (overlap test $a_s < b_e \wedge a_e > b_s$), maintenance windows and the current time.
+
+\section{Load--Dock Compatibility}
+A load is described by its direction, trailer type and hazmat flag. A dock is compatible if (i) its direction is \emph{both} or equals the load's direction, (ii) its supported trailer types include the load's type, and (iii) it is hazmat-certified whenever the load is hazardous. Incompatible doors are never shown to the carrier, and the same rule is re-checked on the server when a booking is submitted (Listing~\ref{lst:compat}).
+
+\section{Atomic Capacity Reservation}
+The central correctness requirement is that a slot with capacity $C$ never holds more than $C$ active bookings. A naive implementation ``count overlapping bookings, then insert if fewer than $C$'' is unsafe: two requests can both count $C-1$ and both insert --- the \emph{write-skew} anomaly \cite{kleppmann2017}. Running both steps inside a database transaction is \emph{not} sufficient by itself, because each transaction reads its own snapshot and they write different documents, so the database sees no conflict.
+
+SmartDock therefore uses two layers (Listing~\ref{lst:reserve}):
+\begin{enumerate}
+  \item \textbf{In-process lock per dock.} Requests for the same door handled by one server process are queued and executed one at a time.
+  \item \textbf{Dock write lock inside a MongoDB transaction.} Each reservation transaction first increments a counter field on the \emph{dock document}, then counts overlapping active bookings and inserts only if the count is below capacity. Because every concurrent reservation for the same door now writes the same document, MongoDB detects a write conflict, aborts all but one transaction and the driver retries them; the retries see the committed booking and are rejected with HTTP 409 if the slot is full. This holds across any number of server instances.
+\end{enumerate}
+The same routine is reused for new bookings, each week of a recurring series, rescheduling (excluding the booking being moved) and waitlist assignment. If transactions are unavailable (a standalone development database), the system falls back to the in-process lock and logs a warning.
+
+\begin{figure}[H]
+\centering
+\input{../diagrams/reserve}
+\caption{Atomic capacity reservation algorithm}
+\label{fig:reserve}
+\end{figure}
+
+\section{Recurring Bookings and Rescheduling}
+For a weekly series of $n$ weeks, the local start time of the first slot (e.g.\ 09:00) is kept and, for each week $k$, the slot with the same local start on date $d+7k$ is looked up in that day's grid. This keeps the appointment at 09:00 local time even across daylight-saving changes. Each week is validated and reserved separately; failures are collected as ``skipped weeks''. Rescheduling validates the new slot with the same rules, reserves capacity while excluding the booking itself, records the move in the booking's history and finally offers the released old slot to the waitlist.
+
+\section{Waitlist Auto-Assignment}
+When capacity is released on a door and slot, the waitlist service selects \texttt{WAITING} entries for exactly that slot (for that door or ``any door''), ordered by creation time. For each entry it re-checks dock compatibility and the carrier's access, then calls the reservation routine. Inside the same transaction it marks the entry \texttt{FULFILLED}, so an entry can never be assigned twice. The loop stops at the first ``slot full'' result (Listing~\ref{lst:waitlist}).
+
+\section{Arrival Classification and Background Jobs}
+At gate check-in the delay is computed as $\Delta = t_\text{check-in} - t_\text{slot start}$ in minutes; the arrival is \emph{late} if $\Delta$ exceeds the warehouse's threshold (default 15 minutes) and \emph{on time} otherwise, including early arrivals. A background job runs every minute and (i) marks confirmed bookings as \texttt{NO\_SHOW} when the grace period after the slot start has elapsed without check-in, (ii) expires pending requests whose slot has started, (iii) sends reminders for confirmed appointments in the next 24 hours, and (iv) expires waitlist entries for past slots. Every update is conditional on the previous state, so the job is safe to run on several instances at once (Listing~\ref{lst:jobs}).
+
+\section{Security Measures}
+\begin{itemize}
+  \item \textbf{Authentication}: bcrypt-hashed passwords, signed JWTs with expiry; the client stores the session and logs out automatically on token expiry.
+  \item \textbf{Authorisation}: role checks on every route and a \emph{tenant} check that pins managers to their own warehouse and carriers to warehouses that approved them (Listing~\ref{lst:access}); identifiers are taken from the verified token, never trusted from the request body. This addresses broken access control, the top risk in the OWASP Top 10 \cite{owasp2021}.
+  \item \textbf{Validation}: every request body is validated with Zod schemas; database schemas validate again before writing.
+  \item \textbf{Abuse protection}: rate limiting on the API; super administrators cannot self-register.
+\end{itemize}
+
+\section{Deployment}
+The Express server serves both the API and the compiled React files, so the system is a single Render web service. The \texttt{render.yaml} Blueprint declares the build command (build client, then server), start command, health check, auto-deploy on every push to the \texttt{main} branch and the environment variables (database URI, generated JWT secret, optional e-mail/SMS keys and demo mode). The database is a MongoDB Atlas free-tier replica set in the Mumbai region. In demo mode the server seeds realistic data on first start and offers a ``Reset demo data'' action.

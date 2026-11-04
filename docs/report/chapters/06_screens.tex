@@ -1,0 +1,24 @@
+\chapter{Screenshots and Live Demo}
+The system is live at \url{\LiveURL}. The screenshots below were captured from the running application with the demo dataset (Chennai Central Distribution Centre, five dock doors, six carriers). Demo logins: \texttt{admin@smartdock.demo} (warehouse manager) and \texttt{carrier@smartdock.demo} (carrier), password \texttt{Demo@123}.
+
+\newcommand{\shotpair}[6]{% fileA, captionA, fileB, captionB, label, main caption
+  \begin{figure}[H]\centering
+  \begin{subfigure}[t]{0.49\textwidth}\centering\fbox{\includegraphics[width=0.96\textwidth]{#1}}\caption{#2}\end{subfigure}\hfill
+  \begin{subfigure}[t]{0.49\textwidth}\centering\fbox{\includegraphics[width=0.96\textwidth]{#3}}\caption{#4}\end{subfigure}
+  \caption{#6}\label{#5}\end{figure}}
+
+\noindent\textbf{Warehouse manager (control tower).} Figures~\ref{fig:s-login}--\ref{fig:s-gate}.
+\shotpair{login.jpg}{Login with one-click demo accounts}{admin_calendar.jpg}{Control tower and appointment calendar}{fig:s-login}{Entry point and manager overview}
+\begin{figure}[H]\centering
+\fbox{\includegraphics[width=0.72\textwidth]{yard_schedule.jpg}}
+\caption{Yard schedule: door, carrier, PO/ASN, truck, driver, load and the next action for each truck}\label{fig:s-yard}
+\end{figure}
+\shotpair{docks.jpg}{Dock doors: direction, trailer types, hazmat, capacity and a maintenance window}{carriers.jpg}{Carrier access request and scorecard with reliability tiers}{fig:s-docks}{Dock configuration and carrier management}
+\shotpair{analytics_kpis.jpg}{KPI cards, daily volume and busiest hours}{analytics_heatmap.jpg}{Demand heatmap, utilisation per door and load mix}{fig:s-heat}{Analytics and KPIs}
+\shotpair{settings.jpg}{Scheduling rules with live slot preview, hours and holidays}{activity_log.jpg}{Activity log: holiday, waitlist auto-assignment, cancellation, check-in, rejection}{fig:s-audit}{Scheduling rules and audit trail}
+\shotpair{notifications.jpg}{Notification centre}{gate_sheet.jpg}{Printable daily gate sheet for security staff}{fig:s-gate}{Notifications and gate operations}
+
+\noindent\textbf{Carrier portal and booking wizard.} Figures~\ref{fig:s-carrier}--\ref{fig:s-b5}.
+\shotpair{carrier_dashboard.jpg}{Carrier dashboard: reliability score, access status, appointments}{booking_step1.jpg}{Step 1: site, movement, trailer type, hazmat}{fig:s-carrier}{Carrier dashboard and booking wizard (1)}
+\shotpair{booking_slots.jpg}{Step 2: only the reefer dock is offered; full slots offer the waitlist}{booking_details.jpg}{Step 3: truck, driver, PO/ASN, pallets and weekly recurrence}{fig:s-b2}{Booking wizard (2): slot selection and shipment details}
+\shotpair{booking_confirm.jpg}{Step 4: confirmation summary}{booking_result.jpg}{Result: 3 of 4 weekly appointments booked, one full week skipped}{fig:s-b5}{Booking wizard (3): confirmation and weekly-series result}

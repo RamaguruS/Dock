@@ -1,0 +1,69 @@
+\chapter{Background and Literature Survey}
+
+\section{Background: Docks, Yards and Appointments}
+A \textbf{dock door} is a bay where a truck is loaded or unloaded. \textbf{Inbound} (receiving) docks accept deliveries from suppliers; \textbf{outbound} (shipping) docks dispatch customer orders. The \textbf{yard} is the area where trucks wait before and after docking. Warehouse operations research identifies receiving and shipping as critical, labour-intensive stages whose performance strongly affects the whole facility \cite{gu2007}.
+
+Docks are heterogeneous. A \emph{reefer} trailer carries temperature-controlled goods and must go to a door with cold-chain facilities; a \emph{flatbed} needs side or crane access; \emph{hazardous materials} require certified bays with spill containment. Each door can also serve a limited number of trucks per time period.
+
+A \textbf{dock appointment} (also called a \emph{truck appointment} or \emph{time-slot booking}) is a reservation of a specific door for a specific time window. The key performance indicators of dock operations include:
+
+\begin{itemize}
+  \item \textbf{Dock utilisation} --- booked truck-slots divided by offered truck-slots.
+  \item \textbf{On-time arrival rate} --- share of trucks arriving within an agreed tolerance of their slot.
+  \item \textbf{No-show rate} --- confirmed appointments where the truck never arrived.
+  \item \textbf{Turnaround (gate-to-gate) time} --- time from gate check-in to departure; split into \emph{yard wait} (gate to door) and \emph{dock time} (loading or unloading).
+\end{itemize}
+
+\section{Literature Survey}
+\textbf{Truck appointment systems at ports.} The most studied application of appointment scheduling in freight is the marine container terminal. Giuliano and O'Brien \cite{giuliano2007} evaluated the gate appointment system introduced at the Ports of Los Angeles and Long Beach and found that its benefits depended heavily on how it was designed and enforced; a system that does not actually control arrivals delivers little congestion relief. Huynh and Walton \cite{huynh2008} modelled how capping the number of trucks per time window reduces truck turn times at terminals and showed the trade-off between the cap and terminal utilisation. Zehendner and Feillet \cite{zehendner2014} showed with an optimisation model that a truck appointment system improves overall service quality at a multimodal terminal by smoothing truck arrivals. Phan and Kim \cite{phan2015} studied how arrival times can be negotiated between trucking companies and a terminal to reduce waiting for both sides.
+
+\textbf{Warehouse and cross-dock scheduling.} Gu, Goetschalckx and McGinnis \cite{gu2007} review warehouse operations and highlight receiving and shipping as planning problems in their own right. Boysen and Fliedner \cite{boysen2010} classify truck scheduling problems at cross-docks, where the assignment of trucks to doors and time slots determines the facility's throughput.
+
+\textbf{Information systems.} Supply-chain textbooks \cite{chopra2016,christopher2016,ivanov2019} position appointment scheduling within the wider trend of collaborative, information-driven logistics, in which partners share capacity information instead of competing for it.
+
+\textbf{Software reliability.} A less discussed but practical issue is correctness under concurrency. Kleppmann \cite{kleppmann2017} describes \emph{write skew}: two transactions both read that a resource is free and both reserve it. A booking system that is vulnerable to this anomaly can double-book a dock exactly when demand is highest. MongoDB's multi-document transactions \cite{mongodbtx} can prevent it only if the transactions are made to conflict on a common document.
+
+\textbf{Simulation.} Discrete-event simulation is a standard method for comparing queueing systems under alternative policies before implementation \cite{law2015}; it is used in this project to estimate the effect of appointments on yard waiting.
+
+\section{Existing Systems}
+Table~\ref{tab:existing} compares common approaches to dock scheduling. The commercial categories are described at a general level from their public positioning; individual products differ.
+
+\begin{table}[!htbp]
+\centering
+\footnotesize
+\caption{Comparison of existing approaches with SmartDock}
+\label{tab:existing}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{2.6cm}*{5}{>{\raggedright\arraybackslash}X}}
+\toprule
+\textbf{Criterion} & \textbf{Phone / e-mail / spreadsheet} & \textbf{Port truck appointment systems} & \textbf{Commercial dock-scheduling SaaS} & \textbf{WMS / YMS suite modules} & \textbf{SmartDock (this project)} \\
+\midrule
+Carrier self-service & No & Yes & Yes & Partial & Yes \\
+Capacity enforced & No (manual) & Yes & Yes & Yes & Yes, atomically across servers \\
+Dock-type / hazmat matching & Manual & Limited (container focus) & Varies & Yes & Yes \\
+Waitlist, recurring, reschedule & No & Varies & Varies & Varies & Yes \\
+Carrier scorecard \& KPIs & No & Terminal KPIs & Yes & Yes & Yes \\
+Audit trail & No & Yes & Yes & Yes & Yes \\
+Cost / effort & Low cost, high effort & Operated by ports & Subscription & High licence and integration cost & Free, open source \\
+Customisable & --- & No & Limited & Limited & Fully (own code) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Gap in Existing Systems}
+\begin{itemize}
+  \item Small and mid-sized warehouses are left between \emph{manual} methods, which do not scale and produce no data, and \emph{enterprise} suites, which are expensive and require long integration projects.
+  \item Port appointment systems are designed for container terminals, not for multi-tenant warehouses with heterogeneous docks.
+  \item Many simple booking tools treat a slot as a calendar entry and do not handle \emph{dock compatibility}, \emph{per-slot capacity} or \emph{concurrency}, so they can double-book at peak times.
+  \item Booking is often separated from execution: if gate events are not captured, KPIs such as on-time rate and turnaround cannot be computed, and carriers cannot be held accountable.
+\end{itemize}
+
+\section{Proposed Solution}
+SmartDock closes these gaps with a single, lightweight, cloud-hosted application that:
+\begin{enumerate}
+  \item lets every warehouse publish its own dock capacity and rules, and lets carriers request access per warehouse;
+  \item offers only \emph{compatible} docks and \emph{valid} slots, and enforces slot capacity with a concurrency-safe reservation algorithm;
+  \item covers the full appointment lifecycle --- request, approval, rescheduling, recurring series, waitlist, gate check-in, dock start, completion, no-show;
+  \item turns the captured events into KPIs, a carrier reliability score and exportable reports;
+  \item records every action in an audit trail and informs both parties through notifications;
+  \item is free, open source and deployable in minutes with one configuration file.
+\end{enumerate}

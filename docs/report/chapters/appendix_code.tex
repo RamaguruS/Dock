@@ -1,0 +1,22 @@
+\chapter{Important Code Snippets}\label{app:code}
+The listings below are taken directly from the project source code (\url{\GitHubURL}). Line numbers refer to the original files.
+
+\lstinputlisting[firstline=124, lastline=154, firstnumber=124, caption={Slot grid for one local date: slot length, buffer, holidays (\texttt{server/src/services/scheduling.ts})}, label={lst:grid}]{../../server/src/services/scheduling.ts}
+
+\lstinputlisting[firstline=33, lastline=61, firstnumber=33, caption={Daylight-saving-safe conversion of local slot times to UTC (\texttt{scheduling.ts})}, label={lst:tz}]{../../server/src/services/scheduling.ts}
+
+\lstinputlisting[firstline=99, lastline=114, firstnumber=99, caption={Load--dock compatibility: direction, trailer type, hazmat (\texttt{server/src/models/Dock.ts})}, label={lst:compat}]{../../server/src/models/Dock.ts}
+
+\lstinputlisting[firstline=346, lastline=426, firstnumber=346, caption={Atomic capacity reservation: in-process dock lock and transactional dock write lock (\texttt{scheduling.ts})}, label={lst:reserve}]{../../server/src/services/scheduling.ts}
+
+\lstinputlisting[firstline=58, lastline=73, firstnumber=58, caption={Appointment lifecycle: allowed status transitions (\texttt{server/src/controllers/bookingController.ts})}, label={lst:states}]{../../server/src/controllers/bookingController.ts}
+
+\lstinputlisting[firstline=362, lastline=369, firstnumber=362, caption={Gate check-in: on-time or late arrival (\texttt{bookingController.ts})}, label={lst:checkin}]{../../server/src/controllers/bookingController.ts}
+
+\lstinputlisting[firstline=40, lastline=108, firstnumber=40, caption={Waitlist: first-in-first-out assignment of released capacity (\texttt{server/src/services/waitlist.ts})}, label={lst:waitlist}]{../../server/src/services/waitlist.ts}
+
+\lstinputlisting[firstline=85, lastline=110, firstnumber=85, caption={Carrier reliability score (\texttt{server/src/services/reliability.ts})}, label={lst:score}]{../../server/src/services/reliability.ts}
+
+\lstinputlisting[firstline=18, lastline=47, firstnumber=18, caption={Background job: automatic no-show detection (\texttt{server/src/services/jobs.ts})}, label={lst:jobs}]{../../server/src/services/jobs.ts}
+
+\lstinputlisting[firstline=71, lastline=118, firstnumber=71, caption={Per-request tenant and warehouse-access control (\texttt{server/src/middleware/authMiddleware.ts})}, label={lst:access}]{../../server/src/middleware/authMiddleware.ts}

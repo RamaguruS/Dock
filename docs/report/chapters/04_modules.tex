@@ -1,0 +1,66 @@
+\chapter{Modules Description}
+SmartDock is organised into ten functional modules. Table~\ref{tab:modules} summarises them; the sections that follow describe each in supply-chain terms.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Functional modules and their main users}
+\label{tab:modules}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{4.2cm}X>{\raggedright\arraybackslash}p{2.4cm}}
+\toprule
+\textbf{Module} & \textbf{Responsibility} & \textbf{Used by} \\
+\midrule
+1. Identity \& access & Registration, login, roles, per-warehouse carrier approval & All \\
+2. Site \& dock configuration & Docks, equipment, capacity, hours, slot rules, holidays, maintenance & Manager \\
+3. Scheduling engine & Slot grid, availability, load--dock matching, atomic reservation & System \\
+4. Appointment booking & Booking wizard, recurring series, rescheduling, cancellation & Carrier, manager \\
+5. Waitlist & Queue for full slots, automatic FIFO assignment & Carrier, system \\
+6. Yard execution & Approvals, gate check-in, dock start, completion, no-shows & Manager, gate \\
+7. Carrier performance & Punctuality tracking, reliability score and tier & Manager, carrier \\
+8. Analytics \& reporting & KPIs, charts, heatmap, CSV/PDF export, gate sheet & Manager \\
+9. Notifications & In-app centre, e-mail, SMS, reminders & All \\
+10. Audit trail & Persistent, filterable log of every action & Manager \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Identity and Access Management}
+Three roles exist: \textbf{warehouse manager}, \textbf{carrier} and \textbf{super administrator}. A manager registers together with the warehouse they run. A carrier registers with its company name and selects the warehouses it wants to serve; each selection creates a \emph{vendor-access request}. A warehouse's manager sees only requests for that warehouse and can approve, reject or later revoke them. A carrier can see availability and book \emph{only} at warehouses that approved it, and the check is repeated on every request so a revocation takes effect immediately. Super administrators cannot be created through the public sign-up form; they are created on the server with a command-line script. Passwords are stored as bcrypt hashes and sessions use signed JSON Web Tokens.
+
+\section{Site and Dock Configuration}
+The manager models the physical facility:
+\begin{itemize}
+  \item \textbf{Dock doors} --- name, movement direction (inbound, outbound or both), supported trailer types (dry van, reefer, flatbed, container), hazmat certification and capacity (trucks per slot).
+  \item \textbf{Operating hours} --- per weekday, with an open/closed flag.
+  \item \textbf{Appointment rules} --- slot length (15, 30, 60 or 90 minutes), turnover buffer between consecutive slots, late-arrival threshold and no-show grace period.
+  \item \textbf{Blackout dates} --- public holidays, stock-takes and shutdowns on which the site is closed.
+  \item \textbf{Maintenance windows} --- planned downtime of a single door; the system lists the existing appointments that overlap so they can be moved.
+\end{itemize}
+
+\section{Scheduling Engine}
+The engine converts the rules into concrete, bookable slots for any date, in the warehouse's own time zone. For each active dock that is compatible with the requested load it reports, per slot, the remaining capacity and the reason a slot is unavailable (\emph{full}, \emph{maintenance} or \emph{past}). It also validates every booking request against the same grid and performs the atomic capacity reservation described in Chapter~\ref{ch:impl}.
+
+\section{Appointment Booking}
+Carriers book through a four-step wizard: (1) site and load details --- inbound or outbound, trailer type, hazmat; (2) date and slot, showing only compatible docks; (3) shipment details --- truck number, driver name and mobile, PO/ASN reference, pallet count, cargo; (4) confirmation. A booking may be made as a \textbf{weekly recurring series} of 2--12 weeks; each week is reserved independently and weeks that are closed or full are reported back rather than failing the whole series. Carriers and managers can \textbf{reschedule} an appointment to another slot or door; the history of moves is stored, and a carrier's move of a confirmed appointment returns it to the manager for re-approval. An entire series can be cancelled in one action.
+
+\section{Waitlist}
+If the desired slot is full, the carrier can join its \textbf{waitlist}, for a specific door or for any compatible door. Whenever capacity is released --- by a cancellation, a rejection or a reschedule --- the system automatically converts the oldest compatible waiting entry into a booking (first-in, first-out), marks the entry as fulfilled and notifies both sides. Entries whose slot has passed expire automatically.
+
+\section{Yard Execution}
+The \emph{Yard schedule} screen is the manager's daily control tower. For the selected day it lists every truck with its door, carrier, driver, load and references, and offers the next valid action: \emph{Approve/Reject} for requests, \emph{Gate check-in} when the truck arrives, \emph{Start at dock} when loading begins, and \emph{Complete \& depart}. The system timestamps each event, classifies the arrival as \emph{on time} or \emph{late} against the warehouse threshold, and records the delay in minutes. Confirmed trucks that do not arrive within the grace period are marked \emph{no-show} automatically; requests that were never approved expire when their slot starts. A printable \emph{gate sheet} gives security staff the day's expected trucks with columns for gate times, seal numbers and signatures.
+
+\section{Carrier Performance}
+Every arrival and no-show feeds the carrier's \textbf{reliability score}:
+\begin{equation}
+\text{Reliability} = \frac{\text{on-time arrivals} + 0.5\times\text{late arrivals}}{\text{arrivals} + \text{no-shows}}\times 100
+\end{equation}
+Scores map to tiers: \textbf{A} ($\geq 90$, excellent), \textbf{B} ($\geq 75$, good), \textbf{C} ($\geq 50$, needs improvement) and \textbf{D} (below 50, poor). Managers see the score and tier when approving a new carrier and in a scorecard table; carriers see their own score on their dashboard, which creates an incentive to arrive on time.
+
+\section{Analytics and Reporting}
+For any date range, the analytics module reports: total appointments and daily average; \textbf{dock utilisation} (booked truck-slots divided by offered truck-slots, excluding closures and maintenance); on-time, no-show and cancellation rates; average \textbf{turnaround}, \textbf{yard wait} and \textbf{dock time}; pallets handled; a daily volume chart; a weekday $\times$ hour \textbf{demand heatmap}; the busiest hours; utilisation per door; the inbound/outbound and equipment mix; and a carrier performance table. Results can be exported as CSV or as a formatted PDF KPI report.
+
+\section{Notifications}
+Each event creates an in-app notification for the relevant party (shown under a bell icon with an unread counter), for example: new request, approval, rejection, rescheduling, cancellation, waitlist assignment, no-show and new carrier access request. About 24 hours before a confirmed appointment a reminder is sent to the carrier and, when SMS is configured, to the driver's mobile. E-mail (Resend) and SMS (Twilio) are activated simply by adding API keys; delivery status is stored with each notification.
+
+\section{Audit Trail}
+Every change --- bookings and status changes, reschedules, waitlist events, dock and rule changes, holidays, maintenance and carrier-access decisions --- is written to an audit collection with the actor, role, time, action and a human-readable message. Automated actions are attributed to ``SmartDock automation''. Managers can filter, search, page through and export the log for their own warehouse only, which supports dispute resolution (for example, detention claims) and compliance.

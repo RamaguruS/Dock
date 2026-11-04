@@ -1,0 +1,81 @@
+\chapter{System Design}
+
+
+\section{System Architecture}
+SmartDock follows a classic three-tier, layered architecture (Figure~\ref{fig:arch}). The \textbf{presentation tier} is a single-page React application running in the user's browser. The \textbf{application tier} is a Node.js/Express REST API that also serves the built React files, so the whole system is one deployable web service. Requests pass through security middleware (rate limiting, JWT authentication, role and tenant checks) before reaching controllers, which delegate business logic to reusable services. The \textbf{data tier} is a MongoDB Atlas replica set, which provides the multi-document transactions required by the booking guarantee. Optional external providers deliver e-mail (Resend) and SMS (Twilio). Code pushed to GitHub is built and deployed automatically by Render.
+
+\begin{figure}[!htbp]
+\centering
+\input{../diagrams/arch}
+\caption{System architecture of SmartDock}
+\label{fig:arch}
+\end{figure}
+
+\section{Data Flow Diagrams}
+Figure~\ref{fig:dfd0} shows the context (level-0) diagram: SmartDock exchanges information with three human actors and the notification providers. Figure~\ref{fig:dfd1} decomposes the system into six processes and five data stores.
+
+\begin{figure}[!htbp]
+\centering
+\input{../diagrams/dfd0}
+\caption{Context diagram (DFD level 0)}
+\label{fig:dfd0}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\input{../diagrams/dfd1}
+\caption{Level-1 data flow diagram}
+\label{fig:dfd1}
+\end{figure}
+
+\section{Use Case Diagram}
+Figure~\ref{fig:usecase} shows what each actor can do. The scheduler represents the automated background jobs.
+
+\begin{figure}[!htbp]
+\centering
+\input{../diagrams/usecase}
+\caption{Use case diagram}
+\label{fig:usecase}
+\end{figure}
+
+\section{Entity--Relationship Diagram}
+Figure~\ref{fig:er} shows the main collections and their relationships. MongoDB stores them as documents; references are ObjectIds and are enforced in application code.
+
+\begin{figure}[!htbp]
+\centering
+\input{../diagrams/er}
+\caption{Entity--relationship diagram}
+\label{fig:er}
+\end{figure}
+
+\section{Appointment Lifecycle}
+Each booking follows a finite-state machine (Figure~\ref{fig:states}). Terminal states can never be revived, so capacity released by a cancellation cannot be silently re-occupied.
+
+\begin{figure}[!htbp]
+\centering
+\input{../diagrams/states}
+\caption{Booking state machine}
+\label{fig:states}
+\end{figure}
+
+\section{Technology Stack}
+\begin{table}[H]
+\centering
+\small
+\caption{Technology stack}
+\label{tab:stack}
+\begin{tabularx}{\textwidth}{>{\bfseries\raggedright\arraybackslash}p{3.0cm}X}
+\toprule
+Layer & Technologies and purpose \\
+\midrule
+Language & TypeScript (strict mode) on both client and server \\
+Frontend & React 19 \cite{react}, Vite 8, Tailwind CSS 4, TanStack React Query (data fetching, polling), React Router, React Hook Form + Zod (forms), date-fns, jsPDF + AutoTable (PDF export) \\
+Backend & Node.js 22, Express 4 \cite{express}, Zod (request validation), JSON Web Tokens, bcrypt password hashing, express-rate-limit, Winston logging \\
+Database & MongoDB Atlas (managed replica set) with Mongoose 8 ODM; multi-document transactions, compound indexes, aggregation pipelines \\
+APIs & REST/JSON API (about 40 endpoints); Resend e-mail API and Twilio SMS API (optional) \\
+Cloud \& DevOps & Render web service \cite{render} (Blueprint \texttt{render.yaml}, auto-deploy from GitHub), MongoDB Atlas free tier, GitHub for version control \\
+Testing & End-to-end verification script with \texttt{mongodb-memory-server} (in-memory replica set) and two concurrent API instances; tenant-isolation unit test \\
+Tools & Visual Studio Code, Git, npm, oxlint, Python + matplotlib (analysis and simulation), \LaTeX{} (this report) \\
+\bottomrule
+\end{tabularx}
+\end{table}

@@ -1,0 +1,123 @@
+\chapter{Testing and Validation}
+
+\section{Testing Strategy}
+\begin{itemize}
+  \item \textbf{Static checks:} TypeScript strict type-checking of client and server on every build; \texttt{oxlint} for the client.
+  \item \textbf{Unit test:} tenant isolation of dock updates, run against a mocked database.
+  \item \textbf{End-to-end test suite} (\texttt{npm run verify:critical}): starts a throw-away in-memory MongoDB \emph{replica set} and \textbf{two} independent API server processes, then drives the real HTTP API through 58 checks covering security, concurrency, scheduling rules and business workflows. Running two servers makes the concurrency test meaningful for a multi-instance cloud deployment.
+  \item \textbf{Manual UI testing:} every screen was exercised in the browser with the demo data (Chapter~6).
+  \item \textbf{Live smoke test:} after deployment, logins, analytics, booking, approval, gate check-in, cancellation and the audit log were verified against the production URL and database.
+\end{itemize}
+
+\section{Test Cases}
+Table~\ref{tab:tests} lists representative test cases from the 58 automated checks. All passed.
+
+{\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.7cm}>{\raggedright\arraybackslash}p{6.2cm}>{\raggedright\arraybackslash}p{5.6cm}c}
+\caption{Representative automated test cases}\label{tab:tests}\\
+\toprule
+\textbf{ID} & \textbf{Test case} & \textbf{Expected result} & \textbf{Status}\\
+\midrule
+\endfirsthead
+\toprule
+\textbf{ID} & \textbf{Test case} & \textbf{Expected result} & \textbf{Status}\\
+\midrule
+\endhead
+\multicolumn{4}{l}{\textit{Security and multi-tenancy}}\\
+T01 & Register a SUPER\_ADMIN through the public API & Rejected (400) & Pass\\
+T02 & Unapproved carrier requests slot availability & Forbidden (403) & Pass\\
+T03 & Manager of warehouse B lists or approves a request for warehouse A & Not visible; approval returns 404 & Pass\\
+T04 & Carrier approved at A tries to book at B & Forbidden (403) & Pass\\
+T05 & Manager B changes a booking of warehouse A & Forbidden (403) & Pass\\
+T06 & Manager A reads warehouse B's audit log & B's events not returned & Pass\\
+\multicolumn{4}{l}{\textit{Capacity and concurrency}}\\
+T07 & 40 simultaneous bookings, capacity-1 slot, two servers & Exactly 1 created, 39 rejected (409) & Pass\\
+T08 & 40 simultaneous bookings, capacity-3 slot, two servers & Exactly 3 created, 37 rejected (409) & Pass\\
+T09 & Availability after T08 & Slot shows 0 remaining & Pass\\
+T10 & Bookings use database transactions & No fallback warning logged & Pass\\
+\multicolumn{4}{l}{\textit{Scheduling rules}}\\
+T11 & Booking not aligned to the slot grid (09:15) & Rejected (400) & Pass\\
+T12 & Booking outside operating hours (03:00) & Rejected (400) & Pass\\
+T13 & Set 30-min slots + 15-min buffer & Grid 08:00--08:30, 08:45--09:15, \ldots & Pass\\
+T14 & Unsupported slot length (45 min) & Rejected (400) & Pass\\
+T15 & Reefer load requests availability & Only the reefer dock is listed & Pass\\
+T16 & Dry-van truck books the reefer-only dock & Rejected (400) & Pass\\
+T17 & Booking during a maintenance window & Slot marked MAINTENANCE; booking rejected & Pass\\
+T18 & Booking on a blackout date & Day closed with reason; booking rejected & Pass\\
+\multicolumn{4}{l}{\textit{Lifecycle and workflows}}\\
+T19 & COMPLETED $\rightarrow$ PENDING; CANCELLED $\rightarrow$ APPROVED & Both rejected (400) & Pass\\
+T20 & Carrier cancels a truck already at the dock & Rejected (400) & Pass\\
+T21 & Mark no-show before the slot starts & Rejected (400) & Pass\\
+T22 & Weekly series of 3 weeks & 3 appointments created & Pass\\
+T23 & Join waitlist for a slot that still has space & Rejected (409) & Pass\\
+T24 & Cancel a booking with a carrier waiting & Waitlisted carrier auto-booked; entry FULFILLED; notified & Pass\\
+T25 & Reschedule to a free slot / to a full slot & 200 with history / 409 & Pass\\
+T26 & Gate check-in, dock start, complete & Timestamps stored; arrival ON\_TIME & Pass\\
+T27 & Reliability after one on-time trip & Score 100, tier A & Pass\\
+T28 & Cancel remaining weekly series & 2 remaining appointments cancelled & Pass\\
+T29 & Audit log after the workflow & All action types recorded & Pass\\
+T30 & Analytics for the period & KPIs, per-dock utilisation and 7$\times$24 heatmap returned & Pass\\
+\bottomrule
+\end{longtable}
+}
+
+\section{Concurrency Experiment}\label{sec:concurrency}
+To verify that test T07 is meaningful, the same test was run with both protection layers temporarily disabled. In that case the reservation logic behaves like a naive ``check then insert'' inside a transaction.
+
+\begin{table}[H]
+\centering
+\caption{Double-booking experiment: 40 simultaneous requests across two servers}
+\label{tab:conc}
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{5.4cm}cc}
+\toprule
+\textbf{Configuration} & \textbf{Capacity-1 slot} & \textbf{Capacity-3 slot}\\
+\midrule
+Naive check-then-insert (protections disabled) & 15 (\textbf{14 over}) & 13 (\textbf{10 over}) \\
+SmartDock reservation algorithm & \textbf{1} & \textbf{3} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Performance}
+Response times were measured from a client in India against the live deployment (Render free tier, Oregon region; MongoDB Atlas M0, Mumbai region), 15 sequential requests per endpoint after a warm-up request. The health check, which does no database work, represents the network round-trip time.
+
+\begin{table}[H]
+\centering
+\caption{Live API response times}
+\label{tab:perf}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Endpoint} & \textbf{Median} & \textbf{90th percentile}\\
+\midrule
+Health check & 666 ms & 757 ms\\
+Slot availability (1 day) & 1,338 ms & 1,433 ms\\
+Yard schedule (1 day) & 1,575 ms & 1,904 ms\\
+Analytics (30 days) & 4,300 ms & 6,719 ms\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+During testing the analytics endpoint initially took about 5.8~s (median). Profiling showed that a new time-zone formatter object was created for every slot conversion; caching these objects reduced the median to the value above. The remaining latency is dominated by geography rather than computation: the free web service runs in Render's Oregon (USA) region while the database is in Mumbai, so every database query crosses the Pacific (roughly 0.2--0.3~s per round trip), and the health check alone shows a 0.5--0.7~s round trip from India to the server. The analytics request also transfers about 900 appointment documents. Moving the web service to an Asian region (e.g.\ Render Singapore) next to the database, caching analytics results and using a paid instance are the identified improvements; even on the free tier, booking and yard operations complete in under two seconds.
+
+\section{Validation Against Objectives}
+\begin{table}[H]
+\centering
+\small
+\caption{Objectives and how they were validated}
+\label{tab:val}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{5.2cm}X}
+\toprule
+\textbf{Objective} & \textbf{Evidence} \\
+\midrule
+Multi-tenancy and access control & T01--T06 \\
+Configurable scheduling, holidays, maintenance & T11--T14, T17, T18 \\
+Load--dock matching & T15, T16 \\
+Capacity guarantee under concurrency & T07--T10, Table~\ref{tab:conc} \\
+Recurring, rescheduling, waitlist & T22--T25, T28 \\
+Yard execution, no-shows, reliability & T19--T21, T26, T27 \\
+KPIs, audit, notifications & T24, T29, T30; Chapters 6 and 8 \\
+Cloud deployment & Live smoke test; \url{\LiveURL} \\
+\bottomrule
+\end{tabularx}
+\end{table}

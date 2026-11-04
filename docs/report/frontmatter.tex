@@ -1,0 +1,93 @@
+% ---------------------------------------------------------------- title page
+\begin{titlepage}
+\centering
+\vspace*{-1cm}
+{\large\bfseries\MakeUppercase{\Institution}\par}
+{\normalsize \InstitutionPlace\par}
+\vspace{0.4cm}
+{\normalsize \Department\par}
+\vspace{1.2cm}
+{\color{brand}\rule{0.8\textwidth}{1.2pt}\par}
+\vspace{0.5cm}
+{\LARGE\bfseries\color{ink}\ProjectShortTitle\par}
+\vspace{0.3cm}
+{\large\color{ink}A Multi-Tenant Dock Appointment Scheduling and\\ Yard Management System for Warehouses and Distribution Centres\par}
+\vspace{0.5cm}
+{\color{brand}\rule{0.8\textwidth}{1.2pt}\par}
+\vspace{1cm}
+{\normalsize A project report submitted in partial fulfilment of the requirements for\par}
+{\normalsize \Course\par}
+\vspace{0.3cm}
+{\normalsize \Programme\par}
+\vspace{1.4cm}
+{\normalsize Submitted by\par}
+\vspace{0.2cm}
+{\large\bfseries \StudentName\par}
+{\normalsize Register No.: \RegisterNumber\par}
+\vspace{1cm}
+{\normalsize Under the guidance of\par}
+\vspace{0.2cm}
+{\large\bfseries \GuideName\par}
+\vfill
+{\normalsize Academic Year \AcademicYear\par}
+{\normalsize \SubmissionMonth\par}
+\end{titlepage}
+
+% ---------------------------------------------------------------- certificate
+\chapter*{Bonafide Certificate}
+\addcontentsline{toc}{chapter}{Bonafide Certificate}
+This is to certify that the project report entitled \textbf{``\ProjectShortTitle: A Multi-Tenant Dock Appointment Scheduling and Yard Management System for Warehouses and Distribution Centres''} is the bonafide work of \textbf{\StudentName} (Register No. \RegisterNumber), carried out under my supervision in partial fulfilment of the requirements of \Course, \Programme, \Department, \Institution, during the academic year \AcademicYear.
+
+\vspace{3cm}
+\noindent
+\begin{tabular}{@{}p{0.5\textwidth}p{0.45\textwidth}@{}}
+\rule{5cm}{0.4pt} & \rule{5cm}{0.4pt}\\
+\textbf{Project Guide} & \textbf{Head of the Department}\\
+\GuideName & [HoD Name]\\
+\end{tabular}
+
+\vspace{2cm}
+\noindent Submitted for the project viva-voce held on \rule{4cm}{0.4pt}
+
+\vspace{2cm}
+\noindent
+\begin{tabular}{@{}p{0.5\textwidth}p{0.45\textwidth}@{}}
+\rule{5cm}{0.4pt} & \rule{5cm}{0.4pt}\\
+\textbf{Internal Examiner} & \textbf{External Examiner}\\
+\end{tabular}
+
+% ---------------------------------------------------------------- declaration
+\chapter*{Declaration}
+\addcontentsline{toc}{chapter}{Declaration}
+I, \textbf{\StudentName} (Register No. \RegisterNumber), hereby declare that the project report entitled \textbf{``\ProjectShortTitle''} submitted to \Institution{} is a record of original work done by me under the guidance of \GuideName. The software, its source code and the results presented in this report were produced as part of this project. This work has not been submitted to any other institution for the award of any degree or diploma.
+
+\vspace{2.5cm}
+\noindent Place: \InstitutionPlace \hfill \StudentName\\
+Date: \rule{3cm}{0.4pt} \hfill Signature of the Student
+
+% ---------------------------------------------------------------- acknowledgement
+\chapter*{Acknowledgement}
+\addcontentsline{toc}{chapter}{Acknowledgement}
+I express my sincere gratitude to the management and the Head of the \Department{} of \Institution{} for providing the facilities and encouragement to carry out this project.
+
+I am deeply thankful to my project guide, \textbf{\GuideName}, for the valuable guidance, constructive feedback and constant support throughout the course of this work.
+
+I also thank the faculty members of the department, my classmates and my family for their encouragement and help during the development and documentation of this project.
+
+\vspace{1.5cm}
+\hfill \textbf{\StudentName}
+
+% ---------------------------------------------------------------- abstract
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+The loading dock is the physical interface between a warehouse and the transport network, and it is one of the most frequent bottlenecks in a supply chain. When carriers arrive without appointments, trucks queue in the yard, drivers accumulate unpaid waiting (detention) time, dock labour is idle in quiet hours and overloaded at peaks, and the warehouse has little data with which to manage carrier performance.
+
+This project presents \textbf{SmartDock}, a cloud-based, multi-tenant \emph{dock appointment scheduling and yard management system}. Warehouse and distribution-centre (DC) managers configure their dock doors (inbound/outbound, supported trailer types, hazmat certification and capacity), operating hours, slot length, turnover buffers, holidays and maintenance windows. Carriers request access to a warehouse, then book a compatible dock slot through a guided wizard, optionally as a weekly recurring appointment; when a slot is full they can join a first-in-first-out waitlist that is served automatically when capacity is released. On the day, the yard is executed through gate check-in, dock start and completion events, from which the system derives on-time performance, no-shows, turnaround time and a carrier reliability score. An analytics module reports dock utilization, demand heatmaps, busiest hours and carrier scorecards, with CSV/PDF export and a printable gate sheet. Every action is recorded in an audit trail and communicated through in-app, e-mail and SMS notifications.
+
+The system is built on the MERN stack (MongoDB, Express, React, Node.js) in TypeScript and is deployed on Render with MongoDB Atlas. Particular attention was paid to correctness: the booking engine guarantees that the capacity of a dock slot is never exceeded, even when requests arrive simultaneously on several server instances, using a MongoDB transaction with a dock-level write lock. An automated end-to-end test suite of 58 checks validates security, concurrency, scheduling rules and the business workflows; a controlled experiment showed that the naive approach admitted 15 trucks into a single-truck slot under 40 concurrent requests, whereas SmartDock admitted exactly one. A discrete-event simulation of a six-door DC handling 60 trucks per day indicates that appointment scheduling reduces the average yard waiting time from 19.4 minutes to about 1 minute and the share of trucks waiting more than 30 minutes from 27.7\% to 0.3\%.
+
+\vspace{0.5cm}
+\noindent\textbf{Keywords:} supply chain management, dock appointment scheduling, yard management, truck appointment system, warehouse operations, carrier performance, MERN stack, cloud deployment.
+
+\vspace{0.5cm}
+\noindent\textbf{Source code:} \url{\GitHubURL} \quad \textbf{Live system:} \url{\LiveURL}

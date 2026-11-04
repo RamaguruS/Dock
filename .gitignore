@@ -18,3 +18,18 @@ build/
 Thumbs.db
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# LaTeX build files
+*.aux
+*.log
+*.toc
+*.lof
+*.lot
+*.out
+*.nav
+*.snm
+*.vrb
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+docs/analysis/rerun.log

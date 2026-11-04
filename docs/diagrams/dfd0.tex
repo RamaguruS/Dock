@@ -1,0 +1,14 @@
+\begin{tikzpicture}
+  \node[proc, minimum size=3cm, font=\small\bfseries] (sys) {0\\SmartDock\\system};
+  \node[ent, left=3.2cm of sys] (car) {Carrier};
+  \node[ent, right=3.2cm of sys] (mgr) {Warehouse\\manager};
+  \node[ent, below=1.8cm of sys] (gate) {Gate staff};
+  \node[ent, above=1.5cm of sys] (prov) {E-mail / SMS\\provider};
+  \draw[flow] ([yshift=4mm]car.east) -- node[above]{access request, booking,\\reschedule, waitlist} ([yshift=4mm]sys.west);
+  \draw[flow] ([yshift=-4mm]sys.west) -- node[below]{slots, status, score,\\notifications} ([yshift=-4mm]car.east);
+  \draw[flow] ([yshift=4mm]mgr.west) -- node[above]{docks, rules, approvals,\\yard events} ([yshift=4mm]sys.east);
+  \draw[flow] ([yshift=-4mm]sys.east) -- node[below]{schedule, KPIs,\\reports, audit} ([yshift=-4mm]mgr.west);
+  \draw[flow] ([xshift=-5mm]gate.north) -- node[left]{check-in /\\departure} ([xshift=-5mm]sys.south);
+  \draw[flow] ([xshift=5mm]sys.south) -- node[right]{gate sheet} ([xshift=5mm]gate.north);
+  \draw[flow] (sys.north) -- node[right]{messages} (prov.south);
+\end{tikzpicture}

@@ -1,0 +1,16 @@
+% Shared colours and TikZ styles for the report and the slides
+\definecolor{brand}{HTML}{6D28D9}
+\definecolor{ink}{HTML}{1F2937}
+\definecolor{muted}{HTML}{6B7280}
+\definecolor{boxbg}{HTML}{F5F3FF}
+\tikzset{
+  blk/.style={draw=ink!70, rounded corners=3pt, fill=white, align=center, font=\small, minimum height=0.9cm, inner sep=4pt},
+  layer/.style={draw=brand!60, fill=boxbg, rounded corners=5pt, inner sep=7pt},
+  lbl/.style={font=\scriptsize\bfseries\color{brand}, anchor=north west},
+  arr/.style={-{Stealth[length=2.2mm]}, draw=ink!70, thick},
+  darr/.style={{Stealth[length=2.2mm]}-{Stealth[length=2.2mm]}, draw=ink!70, thick},
+  ent/.style={draw=ink!80, fill=white, minimum width=2.6cm, minimum height=1cm, align=center, font=\small\bfseries},
+  proc/.style={circle, draw=brand, fill=boxbg, align=center, font=\scriptsize\bfseries, minimum size=2.2cm, inner sep=1pt},
+  store/.style={draw=ink!70, fill=gray!8, minimum width=3.0cm, minimum height=0.7cm, font=\scriptsize\bfseries, path picture={\draw[ink!70] (path picture bounding box.north west) -- (path picture bounding box.south west);}},
+  flow/.style={-{Stealth[length=2mm]}, draw=ink!60, font=\scriptsize, align=center},
+}

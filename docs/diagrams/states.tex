@@ -1,0 +1,21 @@
+\begin{tikzpicture}[st/.style={rounded corners=8pt, draw=brand, fill=boxbg, font=\scriptsize\bfseries, minimum width=1.9cm, minimum height=0.8cm, align=center},
+  term/.style={st, draw=ink!60, fill=gray!10}, t/.style={-{Stealth[length=2mm]}, draw=ink!70, font=\tiny, align=center}]
+  \node[st] (p) at (0,0) {PENDING};
+  \node[st] (a) at (3.4,0) {APPROVED};
+  \node[st] (c) at (7.0,0) {CHECKED\_IN\\(in yard)};
+  \node[st] (i) at (10.6,0) {IN\_PROGRESS\\(at dock)};
+  \node[term] (d) at (14.3,0) {COMPLETED};
+  \node[term] (r) at (0,-2.2) {REJECTED};
+  \node[term] (x) at (5.2,-2.2) {CANCELLED};
+  \node[term] (n) at (3.4,2.2) {NO\_SHOW};
+  \draw[t] (p) -- node[above]{approve} (a);
+  \draw[t] (a) -- node[below]{check-in} (c);
+  \draw[t] (c) -- node[above]{start} (i);
+  \draw[t] (i) -- node[below]{done} (d);
+  \draw[t] (a.north east) to[bend left=25] node[above]{direct to door} (i.north west);
+  \draw[t] (p) -- node[left]{reject} (r);
+  \draw[t] (p) -- (x);
+  \draw[t] (a) -- (x);
+  \draw[t] (c) -- node[right]{cancel} (x);
+  \draw[t] (a) -- node[right]{grace\\expired} (n);
+\end{tikzpicture}

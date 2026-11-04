@@ -1,0 +1,20 @@
+\begin{tikzpicture}[e/.style={rectangle split, rectangle split parts=2, draw=ink!80, fill=white, font=\scriptsize, align=left, rectangle split part fill={boxbg,white}, minimum width=3.4cm, inner sep=3pt},
+  rel/.style={draw=ink!70, thick}, card/.style={font=\scriptsize\bfseries, color=brand}]
+  \node[e] (user) at (0,0) {\textbf{USER}\nodepart{two}\_id (PK)\\username, email\\passwordHash, role\\warehouseId (FK)\\vendorCompany, status};
+  \node[e] (wh) at (6,0) {\textbf{WAREHOUSE}\nodepart{two}\_id (PK), name, address\\timezone, operatingHours[7]\\slotDurationMinutes, bufferMinutes\\lateThreshold, noShowGrace\\blackoutDates[]};
+  \node[e] (dock) at (12,0) {\textbf{DOCK}\nodepart{two}\_id (PK), warehouseId (FK)\\dockName, direction\\supportedTrailerTypes[]\\hazmatCertified, capacity\\maintenanceWindows[]};
+  \node[e] (acc) at (3,-4.2) {\textbf{VENDOR\_ACCESS}\nodepart{two}vendorId (FK)\\warehouseId (FK)\\status, decidedBy};
+  \node[e] (bk) at (9,-4.6) {\textbf{BOOKING}\nodepart{two}\_id (PK), warehouseId, dockId\\vendorId (FK), start/endTime\\status, direction, trailerType\\hazmat, PO/ASN, pallets\\checkedIn/dockStarted/completed\\arrivalStatus, lateBy\\recurrenceGroupId, history[]};
+  \node[e] (wl) at (14,-4.2) {\textbf{WAITLIST\_ENTRY}\nodepart{two}vendorId, warehouseId\\dockId?, start/endTime\\load, truck, status\\fulfilledBookingId};
+  \node[e] (au) at (3,-8.4) {\textbf{AUDIT\_LOG}\nodepart{two}warehouseId, actorId\\action, entity, message};
+  \node[e] (nt) at (9,-9.4) {\textbf{NOTIFICATION}\nodepart{two}userId (FK), type, title\\message, read, email, sms};
+  \draw[rel] (user) -- node[card, above]{1 \quad\quad\quad 1} (wh);
+  \draw[rel] (wh) -- node[card, above]{1 \quad\quad\quad N} (dock);
+  \draw[rel] (user) -- node[card, left, pos=0.3]{1}node[card, left, pos=0.85]{N} (acc);
+  \draw[rel] (wh) -- node[card, right, pos=0.2]{1}node[card, right, pos=0.85]{N} (acc);
+  \draw[rel] (dock) -- node[card, right, pos=0.15]{1}node[card, right, pos=0.85]{N} (bk);
+  \draw[rel] (user.south east) -- node[card, above, pos=0.15]{1}node[card, above, pos=0.9]{N} (bk.west);
+  \draw[rel] (wl) -- node[card, above, pos=0.2]{0..1}node[card, above, pos=0.85]{1} (bk);
+  \draw[rel] (user.south) |- node[card, left, pos=0.3]{1 : N} (au.west);
+  \draw[rel] (user.south) ++(-1,0) |- node[card, pos=0.9, above]{N} (nt.west);
+\end{tikzpicture}
