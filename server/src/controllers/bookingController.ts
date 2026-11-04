@@ -1,164 +1,107 @@
 import { Request, Response } from 'express';
-import { logger } from '../config/logger.js';
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { Booking, BookingStatus, IBooking } from '../models/Booking.js';
-import { Dock } from '../models/Dock.js';
-import { Warehouse } from '../models/Warehouse.js';
+import { Booking, BookingStatus, IBooking, BOOKING_STATUSES } from '../models/Booking.js';
+import { TRAILER_TYPES, LoadRequirements } from '../models/Dock.js';
+import { Warehouse, IWarehouse } from '../models/Warehouse.js';
+import { User } from '../models/User.js';
+import {
+  computeDayAvailability,
+  validateSlotRequest,
+  reserveCapacity,
+  SlotFullError,
+  generateSlotGrid,
+  localDateString,
+  localTimeToUTC,
+  addDaysToDateString,
+} from '../services/scheduling.js';
+import { processWaitlistForSlot } from '../services/waitlist.js';
+import { notifyUser, notifyWarehouseAdmins, formatSlot } from '../services/notifications.js';
+import { audit } from '../services/audit.js';
 
 const objectIdString = (label: string) =>
   z.string().refine((v) => mongoose.Types.ObjectId.isValid(v), `${label} must be a valid ID`);
 
+const loadSchema = {
+  direction: z.enum(['INBOUND', 'OUTBOUND']).default('INBOUND'),
+  trailerType: z.enum(TRAILER_TYPES).default('DRY_VAN'),
+  hazmat: z.boolean().default(false),
+};
+
 const createBookingSchema = z.object({
   warehouseId: objectIdString('Warehouse ID'),
   dockId: objectIdString('Dock ID'),
-  truckNumber: z.string().trim().min(1, 'Truck number is required'),
-  driverName: z.string().trim().min(1, 'Driver name is required'),
-  driverPhone: z.string().trim().min(1, 'Driver phone is required'),
+  truckNumber: z.string().trim().min(1, 'Truck number is required').max(30),
+  driverName: z.string().trim().min(1, 'Driver name is required').max(60),
+  driverPhone: z.string().trim().min(5, 'Driver phone is required').max(20),
   startTime: z.string().datetime({ message: 'Start time must be a valid UTC ISO datetime string' }),
   endTime: z.string().datetime({ message: 'End time must be a valid UTC ISO datetime string' }),
+  ...loadSchema,
+  referenceNumber: z.string().trim().max(60).optional(),
+  palletCount: z.number().int().min(0).max(100).optional(),
+  cargoDescription: z.string().trim().max(200).optional(),
+  recurrence: z.object({ weeks: z.number().int().min(1).max(12) }).optional(),
 });
 
 const updateStatusSchema = z.object({
-  status: z.enum(['PENDING', 'APPROVED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'REJECTED']),
+  status: z.enum(BOOKING_STATUSES),
+  reason: z.string().trim().max(200).optional(),
 });
 
-/** Statuses that no longer occupy dock capacity. */
-const INACTIVE_STATUSES: BookingStatus[] = ['CANCELLED', 'REJECTED'];
+const rescheduleSchema = z.object({
+  dockId: objectIdString('Dock ID').optional(),
+  startTime: z.string().datetime(),
+  endTime: z.string().datetime(),
+});
 
 /**
- * Booking lifecycle. CANCELLED / REJECTED / COMPLETED are terminal, so a released slot can never be
+ * Appointment lifecycle (yard flow):
+ *   PENDING → APPROVED → CHECKED_IN (gate) → IN_PROGRESS (at door) → COMPLETED
+ * COMPLETED / CANCELLED / REJECTED / NO_SHOW are terminal, so a released slot can never be
  * re-occupied by reviving an old booking (that would bypass the capacity check).
  */
 const ALLOWED_TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
   PENDING:     ['APPROVED', 'REJECTED', 'CANCELLED'],
-  APPROVED:    ['IN_PROGRESS', 'CANCELLED'],
-  IN_PROGRESS: ['COMPLETED', 'CANCELLED'],
+  APPROVED:    ['CHECKED_IN', 'IN_PROGRESS', 'CANCELLED', 'NO_SHOW'],
+  CHECKED_IN:  ['IN_PROGRESS', 'CANCELLED'],
+  IN_PROGRESS: ['COMPLETED'],
   COMPLETED:   [],
   CANCELLED:   [],
   REJECTED:    [],
+  NO_SHOW:     [],
 };
 
-/** Vendors may cancel their own bookings, but only before the truck is at the dock. */
-const VENDOR_CANCELLABLE: BookingStatus[] = ['PENDING', 'APPROVED'];
+/** Carriers may cancel / reschedule their own bookings, but only before the truck arrives. */
+const VENDOR_MUTABLE: BookingStatus[] = ['PENDING', 'APPROVED'];
 
-class SlotFullError extends Error {}
+const STATUS_LABEL: Record<BookingStatus, string> = {
+  PENDING: 'pending approval',
+  APPROVED: 'approved',
+  CHECKED_IN: 'checked in at the gate',
+  IN_PROGRESS: 'at the dock',
+  COMPLETED: 'completed',
+  CANCELLED: 'cancelled',
+  REJECTED: 'rejected',
+  NO_SHOW: 'marked as a no-show',
+};
+
+const parseLoadQuery = (q: Request['query']): LoadRequirements => ({
+  direction: typeof q.direction === 'string' && q.direction ? q.direction : undefined,
+  trailerType: typeof q.trailerType === 'string' && q.trailerType ? q.trailerType : undefined,
+  hazmat: q.hazmat === 'true',
+});
+
+const isDateString = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+const carrierName = async (vendorId: string) => {
+  const v = await User.findById(vendorId).select('vendorCompany username');
+  return v?.vendorCompany || v?.username || 'Carrier';
+};
 
 // ---------------------------------------------------------------------------
-// Concurrency control for booking creation
+// Create (single or weekly recurring)
 // ---------------------------------------------------------------------------
-//
-// Two layers:
-// 1. An in-process lock per dock, so concurrent requests handled by this Node process run one at a time.
-// 2. A MongoDB transaction that first WRITES the dock document (bookingLockVersion++).
-//    Any two transactions booking the same dock now touch the same document, so MongoDB raises a
-//    WriteConflict on one of them. withTransaction() retries it, and the retry sees the committed
-//    booking. This keeps the guarantee across multiple server instances.
-//
-// A plain "find overlap, then insert" inside a transaction is NOT enough: both transactions read
-// their own snapshot, see no conflict, insert different documents and both commit.
-//
-// Standalone MongoDB (no replica set) cannot run transactions, so only layer 1 applies there.
-// That is safe for a single server process (local development) but not for multiple instances.
-
-const dockLocks = new Map<string, Promise<void>>();
-
-async function withDockLock<T>(dockId: string, fn: () => Promise<T>): Promise<T> {
-  const previous = dockLocks.get(dockId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => { release = resolve; });
-  const tail = previous.then(() => current);
-  dockLocks.set(dockId, tail);
-
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (dockLocks.get(dockId) === tail) dockLocks.delete(dockId);
-  }
-}
-
-let transactionsSupported: boolean | undefined;
-
-const isTransactionUnsupportedError = (error: any): boolean =>
-  error?.message?.includes('replica set') ||
-  error?.message?.includes('Transaction numbers') ||
-  error?.code === 20 ||
-  error?.codeName === 'IllegalOperation';
-
-interface NewBookingData {
-  warehouseId: string;
-  dockId: string;
-  vendorId: string;
-  truckNumber: string;
-  driverName: string;
-  driverPhone: string;
-  startTime: Date;
-  endTime: Date;
-}
-
-async function insertBookingIfCapacity(
-  data: NewBookingData,
-  capacity: number,
-  session?: mongoose.ClientSession
-): Promise<IBooking> {
-  if (session) {
-    // Take a write lock on the dock document (see comment above)
-    await Dock.updateOne({ _id: data.dockId }, { $inc: { bookingLockVersion: 1 } }, { session });
-  }
-
-  const overlapping = await Booking.countDocuments({
-    dockId: data.dockId,
-    status: { $nin: INACTIVE_STATUSES },
-    startTime: { $lt: data.endTime },
-    endTime: { $gt: data.startTime },
-  }).session(session ?? null);
-
-  if (overlapping >= capacity) {
-    throw new SlotFullError('Selected dock slot is fully booked');
-  }
-
-  const booking = new Booking({ ...data, status: 'PENDING' });
-  await booking.save({ session });
-  return booking;
-}
-
-async function createBookingAtomically(data: NewBookingData, capacity: number): Promise<IBooking> {
-  return withDockLock(data.dockId, async () => {
-    if (transactionsSupported !== false) {
-      const session = await mongoose.startSession();
-      try {
-        let created: IBooking | undefined;
-        await session.withTransaction(async () => {
-          created = await insertBookingIfCapacity(data, capacity, session);
-        });
-        transactionsSupported = true;
-        return created!;
-      } catch (error) {
-        if (!isTransactionUnsupportedError(error)) throw error;
-        transactionsSupported = false;
-        logger.warn(
-          '[BOOKING] MongoDB transactions are unavailable (standalone server). Falling back to the in-process ' +
-          'dock lock, which is only safe with a single server instance. Use a replica set (e.g. Atlas) in production.'
-        );
-      } finally {
-        await session.endSession();
-      }
-    }
-    return insertBookingIfCapacity(data, capacity);
-  });
-}
-
-/** YYYY-MM-DD of an instant as seen in the given IANA timezone. */
-function localDateString(instant: Date, timezone: string): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(instant);
-}
 
 export const createBooking = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -167,85 +110,147 @@ export const createBooking = async (req: Request, res: Response): Promise<void> 
       res.status(400).json({ error: parsed.error.format() });
       return;
     }
+    const data = parsed.data;
+    const vendorId = req.user!.userId;
 
-    const { warehouseId, dockId, truckNumber, driverName, driverPhone, startTime: startStr, endTime: endStr } = parsed.data;
-
-    const startTime = new Date(startStr);
-    const endTime = new Date(endStr);
-
-    if (startTime >= endTime) {
-      res.status(400).json({ error: 'Start time must be before end time' });
-      return;
-    }
-
-    if (startTime <= new Date()) {
-      res.status(400).json({ error: 'Start time must be in the future' });
-      return;
-    }
-
-    const vendorId = req.user?.userId;
-    if (!vendorId) {
-      res.status(401).json({ error: 'Unauthorized: Vendor identifier missing' });
-      return;
-    }
-
-    // 1. Verify Dock exists, is active, and belongs to the specified warehouse
-    const dock = await Dock.findOne({ _id: dockId, warehouseId, isActive: true });
-    if (!dock) {
-      res.status(400).json({ error: 'Selected dock is inactive or does not belong to this warehouse' });
-      return;
-    }
-
-    const warehouse = await Warehouse.findById(warehouseId);
+    const warehouse = await Warehouse.findById(data.warehouseId);
     if (!warehouse) {
       res.status(404).json({ error: 'Warehouse not found' });
       return;
     }
 
-    // 2. The requested range must be exactly one of the slots the warehouse offers that day
-    //    (inside operating hours, aligned to the slot grid). Capacity is defined per slot,
-    //    so arbitrary ranges cannot be counted correctly.
-    const localDate = localDateString(startTime, warehouse.timezone);
-    const day = await computeDayAvailability(warehouseId, localDate, warehouse, dockId);
-    const slot = day.docks[0]?.slots.find(
-      (s) => s.startTime === startTime.toISOString() && s.endTime === endTime.toISOString()
-    );
-    if (!slot) {
-      res.status(400).json({
-        error: 'Requested time does not match an available slot within the warehouse operating hours',
+    const load: LoadRequirements = { direction: data.direction, trailerType: data.trailerType, hazmat: data.hazmat };
+    const firstStart = new Date(data.startTime);
+    const firstEnd = new Date(data.endTime);
+
+    const first = await validateSlotRequest(data.warehouseId, warehouse, data.dockId, firstStart, firstEnd, load);
+    if (!first.ok) {
+      res.status(first.status).json({ error: first.error });
+      return;
+    }
+
+    const weeks = data.recurrence?.weeks ?? 1;
+    const recurrenceGroupId = weeks > 1 ? randomUUID() : undefined;
+    const firstLocalDate = localDateString(firstStart, warehouse.timezone);
+    const localStart = first.localTime.split(' - ')[0];
+
+    const created: IBooking[] = [];
+    const skipped: { date: string; reason: string }[] = [];
+
+    for (let k = 0; k < weeks; k++) {
+      const date = addDaysToDateString(firstLocalDate, 7 * k);
+      let start = firstStart;
+      let end = firstEnd;
+
+      if (k > 0) {
+        const grid = generateSlotGrid(warehouse, date);
+        const slot = grid.slots.find((s) => s.startLocal === localStart);
+        if (!slot) {
+          skipped.push({ date, reason: grid.message ?? 'Slot not offered on this day' });
+          continue;
+        }
+        start = slot.startUTC;
+        end = slot.endUTC;
+        const check = await validateSlotRequest(data.warehouseId, warehouse, data.dockId, start, end, load);
+        if (!check.ok) {
+          skipped.push({ date, reason: check.error });
+          continue;
+        }
+      }
+
+      try {
+        const booking = await reserveCapacity(
+          { dockId: data.dockId, startTime: start, endTime: end, capacity: first.dock.maxCapacityPerHour },
+          async (session) => {
+            const [b] = await Booking.create(
+              [
+                {
+                  warehouseId: data.warehouseId,
+                  dockId: data.dockId,
+                  vendorId,
+                  truckNumber: data.truckNumber,
+                  driverName: data.driverName,
+                  driverPhone: data.driverPhone,
+                  startTime: start,
+                  endTime: end,
+                  direction: data.direction,
+                  trailerType: data.trailerType,
+                  hazmat: data.hazmat,
+                  referenceNumber: data.referenceNumber,
+                  palletCount: data.palletCount,
+                  cargoDescription: data.cargoDescription,
+                  recurrenceGroupId,
+                  status: 'PENDING',
+                },
+              ],
+              { session }
+            );
+            return b;
+          }
+        );
+        created.push(booking);
+      } catch (error) {
+        if (error instanceof SlotFullError) {
+          skipped.push({ date, reason: 'Slot is fully booked' });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (created.length === 0) {
+      res.status(409).json({
+        error: 'Double Booking Conflict: This dock slot is already fully booked.',
+        skipped,
       });
       return;
     }
 
-    // 3. Atomic capacity check + insert
-    let newBooking: IBooking;
-    try {
-      newBooking = await createBookingAtomically(
-        { warehouseId, dockId, vendorId, truckNumber, driverName, driverPhone, startTime, endTime },
-        dock.maxCapacityPerHour
-      );
-    } catch (error) {
-      if (error instanceof SlotFullError) {
-        res.status(409).json({ error: 'Double Booking Conflict: This dock slot is already fully booked.' });
-        return;
-      }
-      throw error;
-    }
+    const name = await carrierName(vendorId);
+    const when = formatSlot(created[0].startTime, warehouse.timezone);
+    const seriesText = weeks > 1 ? ` (weekly series: ${created.length} of ${weeks} appointments booked)` : '';
 
-    logger.info(`[AUDIT] Booking created: ID ${newBooking._id}, Vendor: ${vendorId}, Dock: ${dockId}, Range: ${startTime.toISOString()} to ${endTime.toISOString()}`);
+    await audit({
+      req,
+      warehouseId: data.warehouseId,
+      action: weeks > 1 ? 'RECURRING_BOOKING_CREATED' : 'BOOKING_CREATED',
+      entityType: 'BOOKING',
+      entityId: created[0]._id,
+      message: `${name} requested ${first.dock.dockName} at ${when} for truck ${data.truckNumber}${seriesText}`,
+      metadata: { bookingIds: created.map((b) => b._id.toString()), skipped, recurrenceGroupId },
+    });
+    await notifyWarehouseAdmins(data.warehouseId, {
+      type: 'BOOKING_CREATED',
+      title: 'New appointment request',
+      message: `${name}: truck ${data.truckNumber} (${data.direction.toLowerCase()}, ${data.trailerType.replace('_', ' ').toLowerCase()}) at ${first.dock.dockName}, ${when}${seriesText}.`,
+      bookingId: created[0]._id,
+    });
+    await notifyUser(vendorId, {
+      type: 'BOOKING_CREATED',
+      title: 'Appointment requested',
+      message: `Your appointment at ${warehouse.name} (${first.dock.dockName}, ${when}) is awaiting approval${seriesText}.`,
+      bookingId: created[0]._id,
+    });
 
     res.status(201).json({
-      message: 'Booking created successfully',
-      booking: newBooking,
+      message: weeks > 1 ? `${created.length} of ${weeks} weekly appointments booked` : 'Booking created successfully',
+      booking: created[0],
+      bookings: created,
+      skipped,
+      recurrenceGroupId,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 };
 
+// ---------------------------------------------------------------------------
+// List
+// ---------------------------------------------------------------------------
+
 export const getBookings = async (req: Request, res: Response): Promise<void> => {
   try {
-    const filter: any = {};
+    const filter: Record<string, any> = {};
 
     // Enforce Tenant Isolation
     if (req.user?.role === 'VENDOR') {
@@ -254,29 +259,31 @@ export const getBookings = async (req: Request, res: Response): Promise<void> =>
       filter.warehouseId = req.user.warehouseId;
     }
 
-    // Filter by explicit UTC from/to range (preferred for calendar-driven queries)
     const fromQuery = req.query.from as string;
-    const toQuery   = req.query.to   as string;
-
+    const toQuery = req.query.to as string;
     if (fromQuery && toQuery) {
-      filter.startTime = { $gte: new Date(fromQuery), $lte: new Date(toQuery) };
-    } else {
-      // Legacy: filter by a local YYYY-MM-DD date string
-      const dateQuery = req.query.date as string;
-      if (dateQuery) {
-        const startOfDay = new Date(dateQuery);
-        startOfDay.setUTCHours(0, 0, 0, 0);
-        const endOfDay = new Date(dateQuery);
-        endOfDay.setUTCHours(23, 59, 59, 999);
-        filter.startTime = { $gte: startOfDay, $lte: endOfDay };
+      const from = new Date(fromQuery);
+      const to = new Date(toQuery);
+      if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+        res.status(400).json({ error: 'from and to must be valid ISO dates' });
+        return;
       }
+      filter.startTime = { $gte: from, $lte: to };
+    }
+
+    if (typeof req.query.status === 'string' && req.query.status) {
+      filter.status = { $in: req.query.status.split(',') };
+    }
+    if (typeof req.query.recurrenceGroupId === 'string') {
+      filter.recurrenceGroupId = req.query.recurrenceGroupId;
     }
 
     const bookings = await Booking.find(filter)
-      .populate('dockId')
+      .populate('dockId', 'dockName direction supportedTrailerTypes hazmatCertified maxCapacityPerHour')
       .populate('vendorId', 'username email vendorCompany')
       .populate('warehouseId', 'name address timezone')
-      .sort({ startTime: 1 });
+      .sort({ startTime: 1 })
+      .limit(2000);
 
     res.status(200).json({ bookings });
   } catch (error) {
@@ -284,55 +291,59 @@ export const getBookings = async (req: Request, res: Response): Promise<void> =>
   }
 };
 
+// ---------------------------------------------------------------------------
+// Status changes (approve / reject / gate check-in / dock start / complete / no-show / cancel)
+// ---------------------------------------------------------------------------
+
+type AuthorizedBooking = { booking: IBooking; warehouse: IWarehouse } | { status: number; error: string };
+
+async function loadAuthorizedBooking(req: Request, id: string): Promise<AuthorizedBooking> {
+  if (!mongoose.Types.ObjectId.isValid(id)) return { status: 400, error: 'Invalid booking ID' };
+  const booking = await Booking.findById(id);
+  if (!booking) return { status: 404, error: 'Booking not found' };
+
+  const role = req.user?.role;
+  if (role === 'WAREHOUSE_ADMIN' && booking.warehouseId.toString() !== req.user?.warehouseId) {
+    return { status: 403, error: 'Forbidden: You do not manage the warehouse for this booking' };
+  }
+  if (role === 'VENDOR' && booking.vendorId.toString() !== req.user?.userId) {
+    return { status: 403, error: 'Forbidden: You do not own this booking' };
+  }
+  if (!role || !['WAREHOUSE_ADMIN', 'VENDOR', 'SUPER_ADMIN'].includes(role)) {
+    return { status: 403, error: 'Forbidden: Insufficient privileges' };
+  }
+
+  const warehouse = await Warehouse.findById(booking.warehouseId);
+  if (!warehouse) return { status: 404, error: 'Warehouse not found' };
+  return { booking, warehouse };
+}
 
 export const updateBookingStatus = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
     const parsed = updateStatusSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.format() });
       return;
     }
+    const { status, reason } = parsed.data;
 
-    const { status } = parsed.data;
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      res.status(400).json({ error: 'Invalid booking ID' });
+    const loaded = await loadAuthorizedBooking(req, req.params.id);
+    if ('error' in loaded) {
+      res.status(loaded.status).json({ error: loaded.error });
       return;
     }
+    const { booking, warehouse } = loaded;
+    const isVendor = req.user?.role === 'VENDOR';
 
-    const booking = await Booking.findById(id);
-    if (!booking) {
-      res.status(404).json({ error: 'Booking not found' });
-      return;
-    }
-
-    // Tenant Isolation & RBAC enforcement
-    if (req.user?.role === 'WAREHOUSE_ADMIN') {
-      // Warehouse Admin can update bookings only in their warehouse
-      if (booking.warehouseId.toString() !== req.user.warehouseId) {
-        res.status(403).json({ error: 'Forbidden: You do not manage the warehouse for this booking' });
-        return;
-      }
-    } else if (req.user?.role === 'VENDOR') {
-      // Vendors can only CANCEL their own bookings, before check-in
-      if (booking.vendorId.toString() !== req.user.userId) {
-        res.status(403).json({ error: 'Forbidden: You do not own this booking' });
-        return;
-      }
-
+    if (isVendor) {
       if (status !== 'CANCELLED') {
         res.status(400).json({ error: 'Vendors are only allowed to cancel bookings' });
         return;
       }
-
-      if (!VENDOR_CANCELLABLE.includes(booking.status)) {
+      if (!VENDOR_MUTABLE.includes(booking.status)) {
         res.status(400).json({ error: `Cannot cancel a booking in status: ${booking.status}` });
         return;
       }
-    } else if (req.user?.role !== 'SUPER_ADMIN') {
-      res.status(403).json({ error: 'Forbidden: Insufficient privileges' });
-      return;
     }
 
     // Lifecycle enforcement (applies to every role)
@@ -341,10 +352,27 @@ export const updateBookingStatus = async (req: Request, res: Response): Promise<
       return;
     }
 
+    const now = new Date();
+    const set: Record<string, unknown> = { status };
+
+    if (status === 'NO_SHOW' && now < booking.startTime) {
+      res.status(400).json({ error: 'A booking can only be marked as a no-show after its slot has started' });
+      return;
+    }
+    if (status === 'CHECKED_IN' || (status === 'IN_PROGRESS' && !booking.checkedInAt)) {
+      const lateBy = Math.round((now.getTime() - booking.startTime.getTime()) / 60000);
+      set.checkedInAt = now;
+      set.lateByMinutes = Math.max(0, lateBy);
+      set.arrivalStatus = lateBy > (warehouse.lateThresholdMinutes ?? 15) ? 'LATE' : 'ON_TIME';
+    }
+    if (status === 'IN_PROGRESS') set.dockStartedAt = now;
+    if (status === 'COMPLETED') set.completedAt = now;
+    if ((status === 'CANCELLED' || status === 'REJECTED') && reason) set.cancelReason = reason;
+
     // Conditional update: fails if someone else changed the status in the meantime
     const updated = await Booking.findOneAndUpdate(
       { _id: booking._id, status: booking.status },
-      { $set: { status } },
+      { $set: set },
       { new: true, runValidators: true }
     );
     if (!updated) {
@@ -352,7 +380,47 @@ export const updateBookingStatus = async (req: Request, res: Response): Promise<
       return;
     }
 
-    logger.info(`[AUDIT] Booking status updated: ID ${updated._id}, ${booking.status} -> ${status}, Updated by: ${req.user?.userId} (${req.user?.role})`);
+    const when = formatSlot(updated.startTime, warehouse.timezone);
+    const name = await carrierName(updated.vendorId.toString());
+    const arrivalNote =
+      set.arrivalStatus === 'LATE' ? ` (late by ${set.lateByMinutes} min)` : set.arrivalStatus ? ' (on time)' : '';
+
+    await audit({
+      req,
+      warehouseId: updated.warehouseId,
+      action: 'BOOKING_STATUS_CHANGED',
+      entityType: 'BOOKING',
+      entityId: updated._id,
+      message: `${name} / truck ${updated.truckNumber} at ${when}: ${booking.status} → ${status}${arrivalNote}${reason ? ` — ${reason}` : ''}`,
+      metadata: { from: booking.status, to: status, reason },
+    });
+
+    if (isVendor) {
+      await notifyWarehouseAdmins(updated.warehouseId, {
+        type: 'BOOKING_CANCELLED',
+        title: 'Appointment cancelled by carrier',
+        message: `${name} cancelled truck ${updated.truckNumber} at ${when}.${reason ? ` Reason: ${reason}` : ''}`,
+        bookingId: updated._id,
+      });
+    } else if (['APPROVED', 'REJECTED', 'CANCELLED', 'NO_SHOW'].includes(status)) {
+      await notifyUser(updated.vendorId, {
+        type: `BOOKING_${status}`,
+        title: `Appointment ${STATUS_LABEL[status]}`,
+        message: `Truck ${updated.truckNumber} at ${warehouse.name}, ${when} was ${STATUS_LABEL[status]}.${reason ? ` Reason: ${reason}` : ''}`,
+        bookingId: updated._id,
+        smsTo: status === 'APPROVED' ? updated.driverPhone : undefined,
+      });
+    }
+
+    // Freed capacity → give it to the waitlist
+    if (status === 'CANCELLED' || status === 'REJECTED') {
+      await processWaitlistForSlot({
+        warehouseId: updated.warehouseId.toString(),
+        dockId: updated.dockId.toString(),
+        startTime: updated.startTime,
+        endTime: updated.endTime,
+      });
+    }
 
     res.status(200).json({
       message: `Booking status updated to ${status}`,
@@ -364,172 +432,218 @@ export const updateBookingStatus = async (req: Request, res: Response): Promise<
 };
 
 // ---------------------------------------------------------------------------
-// Shared helpers — availability computation
+// Reschedule (move to another slot and/or dock without losing the booking)
 // ---------------------------------------------------------------------------
 
-/** Convert a local HH:mm string in the given IANA timezone to an exact UTC Date. */
-function getUTCStartAndEnd(dateStr: string, timeStr: string, timezone: string): Date {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-    hour12: false,
-  });
+export const rescheduleBooking = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const parsed = rescheduleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.format() });
+      return;
+    }
 
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const [hour, minute] = timeStr.split(':').map(Number);
+    const loaded = await loadAuthorizedBooking(req, req.params.id);
+    if ('error' in loaded) {
+      res.status(loaded.status).json({ error: loaded.error });
+      return;
+    }
+    const { booking, warehouse } = loaded;
 
-  let utcDate = new Date(Date.UTC(year, month - 1, day, hour, minute));
+    if (!VENDOR_MUTABLE.includes(booking.status)) {
+      res.status(400).json({ error: `Only pending or approved appointments can be rescheduled (current: ${booking.status})` });
+      return;
+    }
 
-  for (let i = 0; i < 3; i++) {
-    const parts = formatter.formatToParts(utcDate);
-    const partMap: Record<string, string> = {};
-    parts.forEach((p) => { partMap[p.type] = p.value; });
+    const newDockId = parsed.data.dockId ?? booking.dockId.toString();
+    const startTime = new Date(parsed.data.startTime);
+    const endTime = new Date(parsed.data.endTime);
 
-    const fYear = parseInt(partMap.year);
-    const fMonth = parseInt(partMap.month);
-    const fDay = parseInt(partMap.day);
-    let fHour = parseInt(partMap.hour);
-    if (fHour === 24) fHour = 0;
-    const fMinute = parseInt(partMap.minute);
+    if (
+      newDockId === booking.dockId.toString() &&
+      startTime.getTime() === booking.startTime.getTime() &&
+      endTime.getTime() === booking.endTime.getTime()
+    ) {
+      res.status(400).json({ error: 'The new slot is the same as the current one' });
+      return;
+    }
 
-    const diffMs =
-      Date.UTC(year, month - 1, day, hour, minute) -
-      Date.UTC(fYear, fMonth - 1, fDay, fHour, fMinute);
-
-    if (diffMs === 0) break;
-    utcDate = new Date(utcDate.getTime() + diffMs);
-  }
-  return utcDate;
-}
-
-const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
-
-interface DockSlotDetail {
-  startTime: string;        // ISO UTC
-  endTime: string;          // ISO UTC
-  localTime: string;        // "09:00 - 10:00"
-  available: boolean;
-  remainingCapacity: number;
-  maxCapacity: number;
-}
-
-interface DockAvailabilityDetail {
-  dockId: string;
-  dockName: string;
-  maxCapacityPerHour: number;
-  slots: DockSlotDetail[];
-}
-
-interface DayAvailabilityResult {
-  closed: boolean;
-  message?: string;
-  docks: DockAvailabilityDetail[];
-}
-
-/**
- * Core availability computation for a single date string (YYYY-MM-DD).
- * Shared by getAvailability (full detail) and getAvailabilitySummary (tallies only).
- * Optionally filter to a specific dockId.
- */
-async function computeDayAvailability(
-  warehouseId: string,
-  date: string,
-  warehouse: { timezone: string; operatingHours: any[] },
-  filterDockId?: string
-): Promise<DayAvailabilityResult> {
-  const [year, month, day] = date.split('-').map(Number);
-  const parsedDate = new Date(year, month - 1, day);
-  const dayOfWeek = DAY_NAMES[parsedDate.getDay()];
-
-  const opHours = warehouse.operatingHours.find((oh: any) => oh.day === dayOfWeek);
-  if (!opHours || !opHours.isOpen) {
-    return { closed: true, message: 'Warehouse is closed on this day', docks: [] };
-  }
-
-  const dockQuery: any = { warehouseId, isActive: true };
-  if (filterDockId) dockQuery._id = filterDockId;
-
-  const docks = await Dock.find(dockQuery);
-  if (docks.length === 0) {
-    return { closed: false, message: 'No active docks in this warehouse', docks: [] };
-  }
-
-  const startOfDayUTC = getUTCStartAndEnd(date, opHours.start, warehouse.timezone);
-  const endOfDayUTC   = getUTCStartAndEnd(date, opHours.end,   warehouse.timezone);
-
-  const bookings = await Booking.find({
-    warehouseId,
-    status: { $nin: ['CANCELLED', 'REJECTED'] },
-    startTime: { $lt: endOfDayUTC },
-    endTime:   { $gt: startOfDayUTC },
-  });
-
-  // Generate hourly slots
-  const [startHour] = opHours.start.split(':').map(Number);
-  const [endHour]   = opHours.end.split(':').map(Number);
-  const pad = (n: number) => n.toString().padStart(2, '0');
-
-  const slotsList: { startLocal: string; endLocal: string; startUTC: Date; endUTC: Date }[] = [];
-  for (let h = startHour; h < endHour; h++) {
-    const startStr = `${pad(h)}:00`;
-    const endStr   = `${pad(h + 1)}:00`;
-    slotsList.push({
-      startLocal: startStr,
-      endLocal:   endStr,
-      startUTC:   getUTCStartAndEnd(date, startStr, warehouse.timezone),
-      endUTC:     getUTCStartAndEnd(date, endStr,   warehouse.timezone),
+    const check = await validateSlotRequest(booking.warehouseId.toString(), warehouse, newDockId, startTime, endTime, {
+      direction: booking.direction,
+      trailerType: booking.trailerType,
+      hazmat: booking.hazmat,
     });
-  }
+    if (!check.ok) {
+      res.status(check.status).json({ error: check.error });
+      return;
+    }
 
-  const resultDocks: DockAvailabilityDetail[] = docks.map((dock) => {
-    const dockSlots: DockSlotDetail[] = slotsList.map((slot) => {
-      const overlapping = bookings.filter(
-        (b) =>
-          b.dockId.toString() === dock._id.toString() &&
-          b.startTime < slot.endUTC &&
-          b.endTime   > slot.startUTC
+    const old = { dockId: booking.dockId, startTime: booking.startTime, endTime: booking.endTime };
+    const isVendor = req.user?.role === 'VENDOR';
+    // A carrier moving a confirmed appointment needs re-approval; an admin move keeps the status.
+    const newStatus: BookingStatus = isVendor ? 'PENDING' : booking.status;
+
+    let updated: IBooking | null;
+    try {
+      updated = await reserveCapacity(
+        {
+          dockId: newDockId,
+          startTime,
+          endTime,
+          capacity: check.dock.maxCapacityPerHour,
+          excludeBookingId: booking._id.toString(),
+        },
+        (session) =>
+          Booking.findOneAndUpdate(
+            { _id: booking._id, status: booking.status },
+            {
+              $set: { dockId: newDockId, startTime, endTime, status: newStatus },
+              $unset: { reminderSentAt: 1 },
+              $push: {
+                rescheduleHistory: {
+                  fromStart: old.startTime,
+                  fromEnd: old.endTime,
+                  fromDockId: old.dockId,
+                  toStart: startTime,
+                  toEnd: endTime,
+                  toDockId: newDockId,
+                  by: req.user?.userId,
+                  at: new Date(),
+                },
+              },
+            },
+            { new: true, runValidators: true, session }
+          )
       );
-      const remaining = Math.max(0, dock.maxCapacityPerHour - overlapping.length);
-      return {
-        startTime:         slot.startUTC.toISOString(),
-        endTime:           slot.endUTC.toISOString(),
-        localTime:         `${slot.startLocal} - ${slot.endLocal}`,
-        available:         remaining > 0,
-        remainingCapacity: remaining,
-        maxCapacity:       dock.maxCapacityPerHour,
-      };
+    } catch (error) {
+      if (error instanceof SlotFullError) {
+        res.status(409).json({ error: 'The new slot is already fully booked.' });
+        return;
+      }
+      throw error;
+    }
+    if (!updated) {
+      res.status(409).json({ error: 'Booking was changed by someone else. Refresh and try again.' });
+      return;
+    }
+
+    const fromWhen = formatSlot(old.startTime, warehouse.timezone);
+    const toWhen = formatSlot(startTime, warehouse.timezone);
+    const name = await carrierName(updated.vendorId.toString());
+
+    await audit({
+      req,
+      warehouseId: updated.warehouseId,
+      action: 'BOOKING_RESCHEDULED',
+      entityType: 'BOOKING',
+      entityId: updated._id,
+      message: `${name} / truck ${updated.truckNumber} moved from ${fromWhen} to ${toWhen} (${check.dock.dockName})`,
+      metadata: { fromDockId: old.dockId.toString(), toDockId: newDockId, fromStart: old.startTime, toStart: startTime },
     });
 
-    return {
-      dockId:             dock._id.toString(),
-      dockName:           dock.dockName,
-      maxCapacityPerHour: dock.maxCapacityPerHour,
-      slots:              dockSlots,
-    };
-  });
+    if (isVendor) {
+      await notifyWarehouseAdmins(updated.warehouseId, {
+        type: 'BOOKING_RESCHEDULED',
+        title: 'Appointment rescheduled by carrier',
+        message: `${name} moved truck ${updated.truckNumber} from ${fromWhen} to ${toWhen} (${check.dock.dockName}). Re-approval needed.`,
+        bookingId: updated._id,
+      });
+    } else {
+      await notifyUser(updated.vendorId, {
+        type: 'BOOKING_RESCHEDULED',
+        title: 'Appointment rescheduled by warehouse',
+        message: `${warehouse.name} moved truck ${updated.truckNumber} from ${fromWhen} to ${toWhen} (${check.dock.dockName}).`,
+        bookingId: updated._id,
+        smsTo: updated.driverPhone,
+      });
+    }
 
-  return { closed: false, docks: resultDocks };
-}
+    // The old slot has a free place now
+    await processWaitlistForSlot({
+      warehouseId: updated.warehouseId.toString(),
+      dockId: old.dockId.toString(),
+      startTime: old.startTime,
+      endTime: old.endTime,
+    });
+
+    res.status(200).json({ message: 'Appointment rescheduled', booking: updated });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+};
 
 // ---------------------------------------------------------------------------
-// Endpoint handlers
+// Cancel the remaining appointments of a recurring series
+// ---------------------------------------------------------------------------
+
+export const cancelSeries = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { groupId } = req.params;
+    const filter: Record<string, unknown> = {
+      recurrenceGroupId: groupId,
+      status: { $in: VENDOR_MUTABLE },
+      startTime: { $gt: new Date() },
+    };
+    if (req.user?.role === 'VENDOR') filter.vendorId = req.user.userId;
+    else if (req.user?.role === 'WAREHOUSE_ADMIN') filter.warehouseId = req.user.warehouseId;
+
+    const bookings = await Booking.find(filter);
+    let cancelled = 0;
+    for (const b of bookings) {
+      const r = await Booking.updateOne(
+        { _id: b._id, status: b.status },
+        { $set: { status: 'CANCELLED', cancelReason: 'Recurring series cancelled' } }
+      );
+      if (r.modifiedCount) {
+        cancelled++;
+        await processWaitlistForSlot({
+          warehouseId: b.warehouseId.toString(),
+          dockId: b.dockId.toString(),
+          startTime: b.startTime,
+          endTime: b.endTime,
+        });
+      }
+    }
+
+    if (bookings[0]) {
+      const name = await carrierName(bookings[0].vendorId.toString());
+      await audit({
+        req,
+        warehouseId: bookings[0].warehouseId,
+        action: 'RECURRING_SERIES_CANCELLED',
+        entityType: 'BOOKING',
+        entityId: groupId,
+        message: `${name}: ${cancelled} upcoming appointments of a weekly series (truck ${bookings[0].truckNumber}) cancelled`,
+      });
+      if (req.user?.role === 'VENDOR') {
+        await notifyWarehouseAdmins(bookings[0].warehouseId, {
+          type: 'BOOKING_CANCELLED',
+          title: 'Recurring series cancelled',
+          message: `${name} cancelled ${cancelled} upcoming weekly appointments for truck ${bookings[0].truckNumber}.`,
+        });
+      }
+    }
+
+    res.status(200).json({ message: `${cancelled} upcoming appointments cancelled`, cancelled });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Availability
 // ---------------------------------------------------------------------------
 
 export const getAvailability = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { warehouseId, date, dockId } = req.query as {
-      warehouseId: string;
-      date: string;
-      dockId?: string;
-    };
+    const { warehouseId, date, dockId } = req.query as { warehouseId: string; date: string; dockId?: string };
 
-    if (!warehouseId || !date) {
+    if (!isDateString(date)) {
       res.status(400).json({ error: 'warehouseId and date (YYYY-MM-DD) are required' });
+      return;
+    }
+    if (dockId && !mongoose.Types.ObjectId.isValid(dockId)) {
+      res.status(400).json({ error: 'Invalid dockId' });
       return;
     }
 
@@ -539,8 +653,11 @@ export const getAvailability = async (req: Request, res: Response): Promise<void
       return;
     }
 
-    const result = await computeDayAvailability(warehouseId, date, warehouse, dockId);
-    res.status(200).json({ ...result });
+    const result = await computeDayAvailability(warehouseId, date, warehouse, {
+      filterDockId: dockId,
+      load: parseLoadQuery(req.query),
+    });
+    res.status(200).json({ ...result, timezone: warehouse.timezone });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
@@ -555,12 +672,11 @@ export const getAvailabilitySummary = async (req: Request, res: Response): Promi
       days?: string;
     };
 
-    if (!warehouseId || !startDate) {
+    if (!isDateString(startDate)) {
       res.status(400).json({ error: 'warehouseId and startDate (YYYY-MM-DD) are required' });
       return;
     }
 
-    // Cap at 14 days regardless of request
     const requestedDays = Math.min(parseInt(daysParam ?? '7', 10) || 7, 14);
 
     const warehouse = await Warehouse.findById(warehouseId);
@@ -569,51 +685,40 @@ export const getAvailabilitySummary = async (req: Request, res: Response): Promi
       return;
     }
 
-    const [sy, sm, sd] = startDate.split('-').map(Number);
     const dayAbbrevs = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
     const dayFullNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const load = parseLoadQuery(req.query);
 
-    const summary = [];
-
-    for (let i = 0; i < requestedDays; i++) {
-      // Build date string without timezone shift
-      const d = new Date(sy, sm - 1, sd + i);
-      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      const dow = d.getDay();
-
-      const dayResult = await computeDayAvailability(warehouseId, dateStr, warehouse, dockId);
-
-      if (dayResult.closed) {
-        summary.push({
-          date:        dateStr,
-          dayOfWeek:   dayFullNames[dow],
-          dayAbbrev:   dayAbbrevs[dow],
-          isOpen:      false,
-          totalSlots:  0,
-          freeSlots:   0,
-          fullyBooked: false,
+    const summary = await Promise.all(
+      Array.from({ length: requestedDays }, async (_, i) => {
+        const dateStr = addDaysToDateString(startDate, i);
+        const [y, m, d] = dateStr.split('-').map(Number);
+        const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+        const dayResult = await computeDayAvailability(warehouseId, dateStr, warehouse, {
+          filterDockId: dockId && mongoose.Types.ObjectId.isValid(dockId) ? dockId : undefined,
+          load,
         });
-        continue;
-      }
 
-      let totalSlots = 0;
-      let freeSlots  = 0;
+        let totalSlots = 0;
+        let freeSlots = 0;
+        for (const dock of dayResult.docks) {
+          const future = dock.slots.filter((s) => s.reason !== 'PAST');
+          totalSlots += future.length;
+          freeSlots += future.filter((s) => s.available).length;
+        }
 
-      for (const dock of dayResult.docks) {
-        totalSlots += dock.slots.length;
-        freeSlots  += dock.slots.filter((s) => s.available).length;
-      }
-
-      summary.push({
-        date:        dateStr,
-        dayOfWeek:   dayFullNames[dow],
-        dayAbbrev:   dayAbbrevs[dow],
-        isOpen:      true,
-        totalSlots,
-        freeSlots,
-        fullyBooked: totalSlots > 0 && freeSlots === 0,
-      });
-    }
+        return {
+          date: dateStr,
+          dayOfWeek: dayFullNames[dow],
+          dayAbbrev: dayAbbrevs[dow],
+          isOpen: !dayResult.closed,
+          closedReason: dayResult.closed ? dayResult.message : undefined,
+          totalSlots,
+          freeSlots,
+          fullyBooked: !dayResult.closed && totalSlots > 0 && freeSlots === 0,
+        };
+      })
+    );
 
     res.status(200).json({ summary });
   } catch (error) {
@@ -636,11 +741,17 @@ export const getCalendarSummary = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    const [year, month] = monthParam.split('-').map(Number);
-    const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
-    const startOfNextMonth = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+    const warehouse = await Warehouse.findById(warehouseId).select('timezone');
+    const timezone = warehouse?.timezone ?? 'UTC';
 
-    const pipeline: any[] = [
+    const [year, month] = monthParam.split('-').map(Number);
+    const firstDay = `${monthParam}-01`;
+    const nextMonth = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    // Month boundaries in the warehouse's local time
+    const startOfMonth = localTimeToUTC(firstDay, '00:00', timezone);
+    const startOfNextMonth = localTimeToUTC(nextMonth, '00:00', timezone);
+
+    const summary = await Booking.aggregate([
       {
         $match: {
           warehouseId: new mongoose.Types.ObjectId(warehouseId),
@@ -649,14 +760,15 @@ export const getCalendarSummary = async (req: Request, res: Response): Promise<v
       },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$startTime', timezone: 'UTC' } },
-          total:      { $sum: 1 },
-          pending:    { $sum: { $cond: [{ $eq: ['$status', 'PENDING']     }, 1, 0] } },
-          approved:   { $sum: { $cond: [{ $eq: ['$status', 'APPROVED']    }, 1, 0] } },
-          inProgress: { $sum: { $cond: [{ $eq: ['$status', 'IN_PROGRESS'] }, 1, 0] } },
-          completed:  { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED']   }, 1, 0] } },
-          cancelled:  { $sum: { $cond: [{ $eq: ['$status', 'CANCELLED']   }, 1, 0] } },
-          rejected:   { $sum: { $cond: [{ $eq: ['$status', 'REJECTED']    }, 1, 0] } },
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$startTime', timezone } },
+          total: { $sum: 1 },
+          pending: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } },
+          approved: { $sum: { $cond: [{ $eq: ['$status', 'APPROVED'] }, 1, 0] } },
+          inProgress: { $sum: { $cond: [{ $in: ['$status', ['CHECKED_IN', 'IN_PROGRESS']] }, 1, 0] } },
+          completed: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] } },
+          cancelled: { $sum: { $cond: [{ $eq: ['$status', 'CANCELLED'] }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
+          noShow: { $sum: { $cond: [{ $eq: ['$status', 'NO_SHOW'] }, 1, 0] } },
         },
       },
       {
@@ -670,12 +782,11 @@ export const getCalendarSummary = async (req: Request, res: Response): Promise<v
           completed: 1,
           cancelled: 1,
           rejected: 1,
+          noShow: 1,
         },
       },
       { $sort: { date: 1 } },
-    ];
-
-    const summary = await Booking.aggregate(pipeline);
+    ]);
     res.status(200).json({ summary });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });

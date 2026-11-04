@@ -13,6 +13,10 @@ import warehouseRoutes from './routes/warehouseRoutes.js';
 import dockRoutes from './routes/dockRoutes.js';
 import vendorRoutes from './routes/vendorRoutes.js';
 import bookingRoutes from './routes/bookingRoutes.js';
+import demoRoutes from './routes/demoRoutes.js';
+import { waitlistRoutes, analyticsRoutes, auditRoutes, notificationRoutes } from './routes/opsRoutes.js';
+import { startJobs } from './services/jobs.js';
+import { seedIfEmpty } from './services/seed.js';
 
 // Load environment variables
 dotenv.config();
@@ -45,6 +49,11 @@ app.use('/api/warehouses', warehouseRoutes);
 app.use('/api/docks', dockRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/waitlist', waitlistRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/audit-logs', auditRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/demo', demoRoutes);
 
 // Health Check Endpoint
 app.get('/health', (req: Request, res: Response) => {
@@ -74,7 +83,13 @@ if (fs.existsSync(path.join(clientDist, 'index.html'))) {
 app.use(errorHandler);
 
 // Start Server once the database is reachable
-connectDB().then(() => {
+connectDB().then(async () => {
+  try {
+    await seedIfEmpty();
+  } catch (error) {
+    logger.error(`[SEED] Failed: ${(error as Error).message}`);
+  }
+  startJobs();
   app.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`);
   });

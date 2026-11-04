@@ -11,6 +11,7 @@ export interface DaySummary {
   totalSlots: number;
   freeSlots: number;
   fullyBooked: boolean;
+  closedReason?: string;
 }
 
 interface Props {
@@ -23,6 +24,8 @@ interface Props {
   onNext: () => void;
   canGoPrev: boolean;
   canGoNext: boolean;
+  /** Extra query string for load compatibility, e.g. '&trailerType=REEFER&direction=INBOUND' */
+  loadQuery?: string;
 }
 
 const DAYS = 7;
@@ -45,14 +48,15 @@ export const DateStrip: React.FC<Props> = ({
   onNext,
   canGoPrev,
   canGoNext,
+  loadQuery = '',
 }) => {
   const startDateStr = format(stripStart, 'yyyy-MM-dd');
 
   const { data: summaryData, isLoading } = useQuery<DaySummary[]>({
-    queryKey: ['availability-summary', warehouseId, startDateStr],
+    queryKey: ['availability-summary', warehouseId, startDateStr, loadQuery],
     queryFn: async () => {
       const res = await api.get(
-        `/api/bookings/availability-summary?warehouseId=${warehouseId}&startDate=${startDateStr}&days=${DAYS}`
+        `/api/bookings/availability-summary?warehouseId=${warehouseId}&startDate=${startDateStr}&days=${DAYS}${loadQuery}`
       );
       return res.data.summary;
     },
@@ -127,7 +131,7 @@ export const DateStrip: React.FC<Props> = ({
                     onClick={() => !isClosed && onDateSelect(dateStr)}
                     disabled={isClosed}
                     title={
-                      isClosed   ? 'Warehouse closed'
+                      isClosed   ? (info?.closedReason ?? 'Warehouse closed')
                       : isFull   ? `Fully booked (${info.totalSlots} slots)`
                       : info     ? `${info.freeSlots} of ${info.totalSlots} slots free`
                       : dateStr

@@ -1,47 +1,13 @@
 import React, { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api';
-import { addDays, startOfDay, differenceInDays } from 'date-fns';
-import { DateStrip } from '../../components/booking/DateStrip';
 import { useVendorAccess } from '../../hooks/useVendorAccess';
+import { SlotPicker, type PickedSlot, type LoadFilter } from '../../components/booking/SlotPicker';
+import { Alert, Button, Field, inputClass } from '../../components/ui';
+import { TRAILER_LABEL, TRAILER_TYPES, type TrailerType, errorMessage, fmtDate, tzAbbrev } from '../../lib/format';
 
-// Short timezone abbreviation in the browser's locale (e.g. "IST", "EST", "PDT")
-const BrowserTZ = Intl.DateTimeFormat('en', { timeZoneName: 'short' })
-  .formatToParts(new Date())
-  .find((p) => p.type === 'timeZoneName')?.value ?? '';
-
-const TODAY = startOfDay(new Date());
-const MAX_FORWARD_DAYS = 30;
-
-interface Warehouse {
-  _id: string;
-  name: string;
-  address: string;
-  timezone: string;
-}
-
-interface SlotDetail {
-  startTime: string;
-  endTime: string;
-  localTime: string;
-  available: boolean;
-  remainingCapacity: number;
-  maxCapacity: number;
-}
-
-interface DockAvailability {
-  dockId: string;
-  dockName: string;
-  maxCapacityPerHour: number;
-  slots: SlotDetail[];
-}
-
-interface AvailabilityResponse {
-  docks: DockAvailability[];
-  closed: boolean;
-  message?: string;
-}
+const STEPS = ['Load details', 'Dock & timeslot', 'Shipment details', 'Confirm'];
 
 export const BookingWizard: React.FC = () => {
   const navigate = useNavigate();
@@ -49,319 +15,152 @@ export const BookingWizard: React.FC = () => {
 
   const [step, setStep] = useState(1);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [result, setResult] = useState<{ message: string; skipped: { date: string; reason: string }[] } | null>(null);
 
-  // --- Step 1 state ---
-  const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
-
-  // --- Step 2 state ---
-  // Which 7-day window is shown (expressed as the first day of the window)
-  const [stripStart, setStripStart] = useState<Date>(TODAY);
-  // Which calendar date is selected in the strip
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  // Which slot the user picked
-  const [selectedSlot, setSelectedSlot] = useState<{
-    dockId: string;
-    dockName: string;
-    startTime: string;
-    endTime: string;
-    localTime: string;
-  } | null>(null);
-
-  // --- Step 3 state ---
-  const [carrierDetails, setCarrierDetails] = useState({
+  const [warehouseId, setWarehouseId] = useState('');
+  const [load, setLoad] = useState<LoadFilter>({ direction: 'INBOUND', trailerType: 'DRY_VAN', hazmat: false });
+  const [slot, setSlot] = useState<PickedSlot | null>(null);
+  const [waitlistMode, setWaitlistMode] = useState(false);
+  const [details, setDetails] = useState({
     truckNumber: '',
     driverName: '',
     driverPhone: '',
+    referenceNumber: '',
+    palletCount: '',
+    cargoDescription: '',
   });
+  const [repeatWeekly, setRepeatWeekly] = useState(false);
+  const [weeks, setWeeks] = useState(4);
 
-  // -----------------------------------------------------------------------
-  // Queries
-  // -----------------------------------------------------------------------
-
-  // Step 1 only offers warehouses that have approved this vendor
   const { data: access = [], isLoading: warehousesLoading } = useVendorAccess();
-  const warehouses: Warehouse[] = access
-    .filter((a) => a.status === 'APPROVED')
-    .map((a) => a.warehouseId);
+  const warehouses = access.filter((a) => a.status === 'APPROVED').map((a) => a.warehouseId);
+  const warehouse = warehouses.find((w) => w._id === warehouseId);
 
-  const selectedWarehouse = warehouses.find((w) => w._id === selectedWarehouseId);
-
-  // Fetch DETAILED slot grid for selected date (stable cache key per [warehouseId, date])
-  const {
-    data: availabilityData,
-    isLoading: availabilityLoading,
-    refetch: refetchAvailability,
-  } = useQuery<AvailabilityResponse>({
-    queryKey: ['availability', selectedWarehouseId, selectedDate],
-    queryFn: async () => {
-      const res = await api.get(
-        `/api/bookings/availability?warehouseId=${selectedWarehouseId}&date=${selectedDate}`
-      );
-      return res.data;
-    },
-    enabled: step === 2 && !!selectedWarehouseId && !!selectedDate,
+  const payload = () => ({
+    warehouseId,
+    dockId: slot!.dockId,
+    startTime: slot!.startTime,
+    endTime: slot!.endTime,
+    ...load,
+    truckNumber: details.truckNumber,
+    driverName: details.driverName,
+    driverPhone: details.driverPhone,
+    referenceNumber: details.referenceNumber || undefined,
+    palletCount: details.palletCount ? Number(details.palletCount) : undefined,
   });
 
-  // -----------------------------------------------------------------------
-  // Mutations
-  // -----------------------------------------------------------------------
-  const createBookingMutation = useMutation({
+  const submit = useMutation({
     mutationFn: async () => {
-      if (!selectedSlot) throw new Error('No timeslot selected');
+      if (waitlistMode) return api.post('/api/waitlist', payload());
       return api.post('/api/bookings', {
-        warehouseId: selectedWarehouseId,
-        dockId: selectedSlot.dockId,
-        truckNumber: carrierDetails.truckNumber,
-        driverName: carrierDetails.driverName,
-        driverPhone: carrierDetails.driverPhone,
-        startTime: selectedSlot.startTime,
-        endTime: selectedSlot.endTime,
+        ...payload(),
+        cargoDescription: details.cargoDescription || undefined,
+        recurrence: repeatWeekly ? { weeks } : undefined,
       });
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['vendorBookings'] });
-      navigate('/vendor');
+      queryClient.invalidateQueries({ queryKey: ['vendorWaitlist'] });
+      queryClient.invalidateQueries({ queryKey: ['availability'] });
+      setResult({ message: res.data.message, skipped: res.data.skipped ?? [] });
     },
     onError: (err: any) => {
-      if (err.response?.status === 409) {
-        setErrorMsg('This slot was just taken! Please select another slot.');
-        refetchAvailability();
+      if (err.response?.status === 409 && !waitlistMode) {
+        setErrorMsg('This slot was just taken by another carrier. Pick another slot or join its waitlist.');
+        queryClient.invalidateQueries({ queryKey: ['availability'] });
+        setSlot(null);
         setStep(2);
-        setSelectedSlot(null);
       } else {
-        const error = err.response?.data?.error;
-        setErrorMsg(typeof error === 'string' ? error : 'Booking submission failed. Please try again.');
+        setErrorMsg(errorMessage(err, 'Submission failed. Please try again.'));
       }
     },
   });
 
-  // -----------------------------------------------------------------------
-  // Navigation helpers
-  // -----------------------------------------------------------------------
-  const stripDaysOffset = differenceInDays(stripStart, TODAY);
-  const canGoPrev = stripDaysOffset > 0;
-  const canGoNext = stripDaysOffset + 7 < MAX_FORWARD_DAYS;
+  const canNext =
+    (step === 1 && !!warehouseId) ||
+    (step === 2 && !!slot) ||
+    (step === 3 && details.truckNumber.trim() && details.driverName.trim() && details.driverPhone.trim().length >= 5);
 
-  const handlePrevWeek = () => {
-    const next = addDays(stripStart, -7);
-    setStripStart(next < TODAY ? TODAY : next);
-  };
-
-  const handleNextWeek = () => {
-    const next = addDays(stripStart, 7);
-    const maxStart = addDays(TODAY, MAX_FORWARD_DAYS - 7);
-    setStripStart(next > maxStart ? maxStart : next);
-  };
-
-  const handleDateSelect = (date: string) => {
-    if (date !== selectedDate) {
-      setSelectedDate(date);
-      setSelectedSlot(null);
-      setErrorMsg(null);
-    }
-  };
-
-  const handleSlotSelect = (dock: DockAvailability, slot: SlotDetail) => {
-    setSelectedSlot({
-      dockId: dock.dockId,
-      dockName: dock.dockName,
-      startTime: slot.startTime,
-      endTime: slot.endTime,
-      localTime: slot.localTime,
-    });
+  const next = () => {
     setErrorMsg(null);
+    if (step === 4) submit.mutate();
+    else setStep((s) => s + 1);
   };
 
-  const handleStep1Next = () => {
-    if (!selectedWarehouseId) { setErrorMsg('Please select a warehouse location.'); return; }
-    setErrorMsg(null);
-    setStep(2);
-  };
-
-  const handleStep2Next = () => {
-    if (!selectedDate) { setErrorMsg('Please select a date from the calendar strip.'); return; }
-    if (!selectedSlot) { setErrorMsg('Please select an available timeslot.'); return; }
-    setErrorMsg(null);
-    setStep(3);
-  };
-
-  const handleStep3Next = () => {
-    if (!carrierDetails.truckNumber.trim()) { setErrorMsg('Truck number / license plate is required.'); return; }
-    if (!carrierDetails.driverName.trim())  { setErrorMsg('Driver name is required.'); return; }
-    if (!carrierDetails.driverPhone.trim()) { setErrorMsg('Driver phone is required.'); return; }
-    setErrorMsg(null);
-    setStep(4);
-  };
-
-  const handleBack = () => { setErrorMsg(null); setStep((p) => Math.max(1, p - 1)); };
-
-  // -----------------------------------------------------------------------
-  // Render helpers
-  // -----------------------------------------------------------------------
-  const renderSlotGrid = () => {
-    if (!selectedDate) {
-      return (
-        <div className="text-center py-10 bg-slate-950/50 border border-slate-800 rounded-2xl">
-          <p className="text-sm text-slate-500">← Select a date above to view available slots</p>
-        </div>
-      );
-    }
-
-    if (availabilityLoading) {
-      return (
-        <div className="space-y-4">
-          {[0, 1].map((i) => (
-            <div key={i} className="bg-slate-950/50 border border-slate-800 rounded-2xl p-4 animate-pulse">
-              <div className="h-3 w-24 bg-slate-700 rounded mb-3" />
-              <div className="grid grid-cols-3 gap-2">
-                {Array.from({ length: 6 }).map((_, j) => (
-                  <div key={j} className="h-12 bg-slate-800 rounded-xl" />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      );
-    }
-
-    if (availabilityData?.closed) {
-      return (
-        <div className="text-center py-10 bg-slate-950/50 border border-slate-800 rounded-2xl">
-          <p className="text-sm font-bold text-slate-400">🚫 Warehouse Closed</p>
-          <p className="text-xs text-slate-500 mt-1">{availabilityData.message}</p>
-        </div>
-      );
-    }
-
-    if (!availabilityData?.docks?.length) {
-      return (
-        <div className="text-center py-10 bg-slate-950/50 border border-slate-800 rounded-2xl">
-          <p className="text-sm text-slate-500">No active docks found for this warehouse.</p>
-        </div>
-      );
-    }
-
+  if (result) {
     return (
-      <div className="space-y-5">
-        {availabilityData.docks.map((dock) => (
-          <div key={dock.dockId}>
-            <div className="flex items-center gap-2 mb-2">
-              <h3 className="text-xs font-black text-purple-400 uppercase tracking-wider">{dock.dockName}</h3>
-              {dock.maxCapacityPerHour > 1 && (
-                <span className="text-[10px] text-slate-500 bg-slate-800 border border-slate-700 rounded-full px-2 py-0.5">
-                  {dock.maxCapacityPerHour} trucks/hr
-                </span>
-              )}
+      <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-6 flex items-center justify-center">
+        <div className="max-w-lg w-full bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center space-y-4">
+          <div className="text-4xl">{waitlistMode ? '⏳' : '✅'}</div>
+          <h1 className="text-xl font-bold">{result.message}</h1>
+          <p className="text-sm text-slate-400">
+            {waitlistMode
+              ? 'If a place opens up on this slot it will be assigned to you automatically and you will be notified.'
+              : 'The warehouse will review your request. You will get a notification when it is approved.'}
+          </p>
+          {result.skipped.length > 0 && (
+            <div className="text-left text-xs bg-slate-950 border border-slate-800 rounded-xl p-3">
+              <p className="font-bold text-amber-400 mb-1">Weeks not booked:</p>
+              {result.skipped.map((s) => (
+                <p key={s.date} className="text-slate-400">
+                  {s.date}: {s.reason}
+                </p>
+              ))}
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-              {dock.slots.map((slot, idx) => {
-                const isSelected =
-                  selectedSlot?.dockId === dock.dockId &&
-                  selectedSlot?.startTime === slot.startTime;
-
-                const multiCapacity = dock.maxCapacityPerHour > 1;
-
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    disabled={!slot.available}
-                    onClick={() => handleSlotSelect(dock, slot)}
-                    className={`
-                      p-3 rounded-xl text-center text-xs font-semibold border
-                      transition-all duration-150 cursor-pointer flex flex-col items-center gap-1
-                      ${!slot.available
-                        ? 'bg-red-950/40 border-red-900/30 text-red-500/50 cursor-not-allowed opacity-60'
-                        : isSelected
-                        ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-900/25 scale-[1.02]'
-                        : 'bg-slate-900/80 border-slate-700/50 text-slate-200 hover:border-emerald-600/50 hover:bg-slate-800/70 hover:text-emerald-400'
-                      }
-                    `}
-                  >
-                    <span>{slot.localTime}</span>
-                    {multiCapacity && (
-                      <span className={`text-[9px] font-bold leading-none
-                        ${!slot.available ? 'text-red-500/50' : isSelected ? 'text-purple-200' : 'text-emerald-400/80'}`}>
-                        {slot.available
-                          ? `${slot.remainingCapacity}/${slot.maxCapacity} free`
-                          : 'Full'}
-                      </span>
-                    )}
-                    {!multiCapacity && !slot.available && (
-                      <span className="text-[9px] font-bold leading-none text-red-500/60">Full</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+          )}
+          <Button variant="primary" onClick={() => navigate('/vendor')}>
+            Back to dashboard
+          </Button>
+        </div>
       </div>
     );
-  };
+  }
 
-  // -----------------------------------------------------------------------
-  // Render
-  // -----------------------------------------------------------------------
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-4 lg:p-8 flex flex-col justify-center items-center">
-      <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-6 md:p-8 relative overflow-hidden">
-        <div className="absolute -top-24 -left-24 w-48 h-48 bg-purple-600/10 rounded-full blur-3xl" />
-
-        {/* Progress bar */}
-        <div className="relative z-10 mb-8">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-semibold mb-2">
-            <span>Step {step} of 4</span>
-            <span>
-              {step === 1 && 'Warehouse'}
-              {step === 2 && 'Date & Timeslot'}
-              {step === 3 && 'Carrier & Driver Details'}
-              {step === 4 && 'Summary & Confirmation'}
-            </span>
-          </div>
-          <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden">
-            <div className="bg-purple-600 h-full transition-all duration-300" style={{ width: `${(step / 4) * 100}%` }} />
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-6 lg:p-8">
+      <div className="max-w-4xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 shadow-2xl">
+        <div className="mb-6">
+          <span className="text-xs font-bold uppercase tracking-wider text-purple-400">
+            {waitlistMode ? 'Join waitlist' : 'New dock appointment'}
+          </span>
+          <h1 className="text-2xl font-extrabold mt-1">
+            Step {step} of 4 · {STEPS[step - 1]}
+          </h1>
+          <div className="flex gap-1.5 mt-3">
+            {STEPS.map((_, i) => (
+              <div key={i} className={`h-1.5 flex-1 rounded-full ${i < step ? 'bg-purple-500' : 'bg-slate-800'}`} />
+            ))}
           </div>
         </div>
 
-        {/* Error alert */}
         {errorMsg && (
-          <div className="p-4 bg-red-950/50 border border-red-500/30 rounded-xl text-red-400 text-sm mb-6 flex justify-between items-center animate-fade-in relative z-10">
-            <span>{errorMsg}</span>
-            <button onClick={() => setErrorMsg(null)} className="text-red-400 hover:text-red-200 font-bold ml-3">&times;</button>
+          <div className="mb-4">
+            <Alert kind="error" onClose={() => setErrorMsg(null)}>
+              {errorMsg}
+            </Alert>
           </div>
         )}
 
-        {/* Steps */}
-        <div className="relative z-10 min-h-[250px]">
-
-          {/* ── STEP 1: Warehouse Selection ──────────────────────────────── */}
+        <div className="min-h-[260px]">
           {step === 1 && (
-            <div className="space-y-6 animate-fade-in">
-              <h2 className="text-xl font-bold text-slate-100">Choose Warehouse Location</h2>
-              <div>
-                <label htmlFor="warehouse" className="block text-sm font-semibold text-slate-300">
-                  Select Warehouse
-                </label>
+            <div className="space-y-5">
+              <Field label="Warehouse / distribution centre">
                 {warehousesLoading ? (
-                  <p className="text-sm text-slate-500 mt-2">Loading warehouses...</p>
+                  <p className="text-sm text-slate-500">Loading…</p>
                 ) : warehouses.length === 0 ? (
-                  <p className="text-sm text-slate-400 mt-2">
-                    No warehouse has approved your account yet. Request access from your dashboard and wait for
-                    the warehouse administrator to approve it.
+                  <p className="text-sm text-slate-400">
+                    No warehouse has approved your account yet. Request access from your dashboard.
                   </p>
                 ) : (
                   <select
-                    id="warehouse"
-                    value={selectedWarehouseId}
+                    className={inputClass}
+                    value={warehouseId}
                     onChange={(e) => {
-                      setSelectedWarehouseId(e.target.value);
-                      setSelectedDate(null);
-                      setSelectedSlot(null);
+                      setWarehouseId(e.target.value);
+                      setSlot(null);
                     }}
-                    className="w-full mt-2 bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-sm text-slate-100 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
                   >
-                    <option value="">-- Choose Location --</option>
+                    <option value="">— Choose a site —</option>
                     {warehouses.map((w) => (
                       <option key={w._id} value={w._id}>
                         {w.name} ({w.address})
@@ -369,194 +168,168 @@ export const BookingWizard: React.FC = () => {
                     ))}
                   </select>
                 )}
+              </Field>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <Field label="Movement type">
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['INBOUND', 'OUTBOUND'] as const).map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => {
+                          setLoad((l) => ({ ...l, direction: d }));
+                          setSlot(null);
+                        }}
+                        className={`py-2.5 rounded-xl border text-sm font-semibold cursor-pointer ${
+                          load.direction === d ? 'bg-purple-600 border-purple-500' : 'bg-slate-950 border-slate-800 hover:border-slate-600'
+                        }`}
+                      >
+                        {d === 'INBOUND' ? '⬇ Inbound delivery' : '⬆ Outbound pickup'}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+                <Field label="Trailer / equipment type">
+                  <select
+                    className={inputClass}
+                    value={load.trailerType}
+                    onChange={(e) => {
+                      setLoad((l) => ({ ...l, trailerType: e.target.value as TrailerType }));
+                      setSlot(null);
+                    }}
+                  >
+                    {TRAILER_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {TRAILER_LABEL[t]}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
               </div>
+              <label className="flex items-center gap-3 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="accent-orange-500 w-4 h-4"
+                  checked={load.hazmat}
+                  onChange={(e) => {
+                    setLoad((l) => ({ ...l, hazmat: e.target.checked }));
+                    setSlot(null);
+                  }}
+                />
+                <span>
+                  Hazardous materials (dangerous goods)
+                  <span className="block text-xs text-slate-500">Only hazmat-certified docks will be offered.</span>
+                </span>
+              </label>
             </div>
           )}
 
-          {/* ── STEP 2: Date Strip + Slot Grid ───────────────────────────── */}
-          {step === 2 && (
-            <div className="space-y-5 animate-fade-in">
-              <div>
-                <h2 className="text-xl font-bold text-slate-100">
-                  Select Date &amp; Timeslot
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  {selectedWarehouse?.name} &bull; Warehouse TZ: {selectedWarehouse?.timezone} &bull; Your TZ: {BrowserTZ}
-                </p>
+          {step === 2 && warehouse && (
+            <SlotPicker
+              warehouseId={warehouseId}
+              warehouseTimezone={warehouse.timezone}
+              load={load}
+              selected={slot}
+              onSelect={(s) => {
+                setSlot(s);
+                setWaitlistMode(false);
+              }}
+              onJoinWaitlist={(s) => {
+                setSlot(s);
+                setWaitlistMode(true);
+                setStep(3);
+              }}
+            />
+          )}
+
+          {step === 3 && (
+            <div className="space-y-4">
+              {waitlistMode && (
+                <Alert kind="info">
+                  This slot is full. You are joining the <b>waitlist</b> for {slot?.dockName}, {slot?.localTime}. If a carrier
+                  cancels, the slot is assigned to you automatically.{' '}
+                  <button className="underline cursor-pointer" onClick={() => { setWaitlistMode(false); setSlot(null); setStep(2); }}>
+                    Pick another slot instead
+                  </button>
+                </Alert>
+              )}
+              <div className="grid sm:grid-cols-3 gap-4">
+                <Field label="Truck / trailer number *">
+                  <input className={inputClass} placeholder="TN 09 AB 1234" value={details.truckNumber} onChange={(e) => setDetails({ ...details, truckNumber: e.target.value })} />
+                </Field>
+                <Field label="Driver name *">
+                  <input className={inputClass} placeholder="Ravi Kumar" value={details.driverName} onChange={(e) => setDetails({ ...details, driverName: e.target.value })} />
+                </Field>
+                <Field label="Driver mobile *" hint="Used for SMS reminders">
+                  <input className={inputClass} placeholder="+91 98400 12345" value={details.driverPhone} onChange={(e) => setDetails({ ...details, driverPhone: e.target.value })} />
+                </Field>
               </div>
-
-              {/* 7-day strip */}
-              <DateStrip
-                warehouseId={selectedWarehouseId}
-                stripStart={stripStart}
-                selectedDate={selectedDate}
-                onDateSelect={handleDateSelect}
-                onPrev={handlePrevWeek}
-                onNext={handleNextWeek}
-                canGoPrev={canGoPrev}
-                canGoNext={canGoNext}
-              />
-
-              {/* Selected date label */}
-              {selectedDate && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400">Showing slots for:</span>
-                  <span className="text-xs font-bold text-purple-400 bg-purple-950/40 border border-purple-800/30 rounded-full px-2.5 py-0.5">
-                    {selectedDate}
-                  </span>
-                  {selectedSlot && (
-                    <span className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/30 rounded-full px-2.5 py-0.5 font-semibold">
-                      ✓ {selectedSlot.dockName} · {selectedSlot.localTime}
-                    </span>
+              <div className="grid sm:grid-cols-3 gap-4">
+                <Field label="PO / ASN reference">
+                  <input className={inputClass} placeholder="PO-4500123" value={details.referenceNumber} onChange={(e) => setDetails({ ...details, referenceNumber: e.target.value })} />
+                </Field>
+                <Field label="Pallet count">
+                  <input type="number" min={0} max={100} className={inputClass} placeholder="24" value={details.palletCount} onChange={(e) => setDetails({ ...details, palletCount: e.target.value })} />
+                </Field>
+                {!waitlistMode && (
+                  <Field label="Cargo description">
+                    <input className={inputClass} placeholder="FMCG cartons" value={details.cargoDescription} onChange={(e) => setDetails({ ...details, cargoDescription: e.target.value })} />
+                  </Field>
+                )}
+              </div>
+              {!waitlistMode && (
+                <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+                  <label className="flex items-center gap-3 text-sm cursor-pointer">
+                    <input type="checkbox" className="accent-purple-500 w-4 h-4" checked={repeatWeekly} onChange={(e) => setRepeatWeekly(e.target.checked)} />
+                    <span className="font-semibold">Recurring appointment — repeat every week at this time</span>
+                  </label>
+                  {repeatWeekly && (
+                    <div className="mt-3 flex items-center gap-3 text-sm">
+                      <span className="text-slate-400">For</span>
+                      <input type="number" min={2} max={12} className={`${inputClass} !w-20`} value={weeks} onChange={(e) => setWeeks(Math.min(12, Math.max(2, Number(e.target.value) || 2)))} />
+                      <span className="text-slate-400">weeks (each week is booked only if the slot is free)</span>
+                    </div>
                   )}
                 </div>
               )}
-
-              {/* Slot grid */}
-              <div className="max-h-72 overflow-y-auto pr-1 space-y-1 custom-scroll">
-                {renderSlotGrid()}
-              </div>
             </div>
           )}
 
-          {/* ── STEP 3: Carrier & Driver ─────────────────────────────────── */}
-          {step === 3 && (
-            <div className="space-y-5 animate-fade-in">
-              <h2 className="text-xl font-bold text-slate-100">Carrier &amp; Dispatch details</h2>
-
-              <div>
-                <label htmlFor="truckNumber" className="block text-sm font-semibold text-slate-300">
-                  Truck Number / License Plate
-                </label>
-                <input
-                  id="truckNumber"
-                  type="text"
-                  required
-                  value={carrierDetails.truckNumber}
-                  onChange={(e) => setCarrierDetails({ ...carrierDetails, truckNumber: e.target.value })}
-                  placeholder="e.g. TRK-8899 or IL-9838"
-                  className="w-full mt-2 bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-sm text-slate-100 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
-                />
-              </div>
-
-              <div>
-                <label htmlFor="driverName" className="block text-sm font-semibold text-slate-300">
-                  Driver Full Name
-                </label>
-                <input
-                  id="driverName"
-                  type="text"
-                  required
-                  value={carrierDetails.driverName}
-                  onChange={(e) => setCarrierDetails({ ...carrierDetails, driverName: e.target.value })}
-                  placeholder="John Doe"
-                  className="w-full mt-2 bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-sm text-slate-100 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
-                />
-              </div>
-
-              <div>
-                <label htmlFor="driverPhone" className="block text-sm font-semibold text-slate-300">
-                  Driver Mobile Phone
-                </label>
-                <input
-                  id="driverPhone"
-                  type="tel"
-                  required
-                  value={carrierDetails.driverPhone}
-                  onChange={(e) => setCarrierDetails({ ...carrierDetails, driverPhone: e.target.value })}
-                  placeholder="+1 (555) 019-2834"
-                  className="w-full mt-2 bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-sm text-slate-100 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* ── STEP 4: Review & Confirm ─────────────────────────────────── */}
-          {step === 4 && (
-            <div className="space-y-6 animate-fade-in text-sm">
-              <h2 className="text-xl font-bold text-slate-100">Review Booking Request</h2>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4">
-                <div className="grid grid-cols-2 gap-4 border-b border-slate-900 pb-4">
-                  <div>
-                    <span className="text-[10px] text-slate-500 font-bold uppercase block">Warehouse</span>
-                    <span className="font-bold text-slate-200">{selectedWarehouse?.name}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-500 font-bold uppercase block">Address</span>
-                    <span className="text-slate-300">{selectedWarehouse?.address}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 border-b border-slate-900 pb-4">
-                  <div>
-                    <span className="text-[10px] text-slate-500 font-bold uppercase block">Date &amp; Timeslot</span>
-                    <span className="font-bold text-purple-400">
-                      {selectedDate} — {selectedSlot?.localTime}
-                    </span>
-                    <span className="text-[10px] text-slate-500 block mt-0.5">
-                      wh: {selectedWarehouse?.timezone} / you: {BrowserTZ}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-500 font-bold uppercase block">Dock</span>
-                    <span className="font-bold text-slate-200">{selectedSlot?.dockName}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <span className="text-[10px] text-slate-500 font-bold uppercase block">Truck Number</span>
-                    <span className="font-semibold text-slate-200">{carrierDetails.truckNumber}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-500 font-bold uppercase block">Driver Contact</span>
-                    <span className="text-slate-300">{carrierDetails.driverName} ({carrierDetails.driverPhone})</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-4 bg-purple-950/20 border border-purple-500/10 rounded-xl text-purple-300 text-xs">
-                ⚠️ Overlap prevention is atomically checked in the database. If this timeslot is reserved by another vendor before you click submit, you will be prompted to pick a new timeslot.
-              </div>
+          {step === 4 && slot && warehouse && (
+            <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-5 text-sm grid sm:grid-cols-2 gap-y-3 gap-x-6">
+              <Summary label="Site" value={warehouse.name} />
+              <Summary label="Dock" value={slot.dockName} />
+              <Summary label="Date" value={fmtDate(slot.startTime, warehouse.timezone)} />
+              <Summary label="Slot" value={`${slot.localTime} (${tzAbbrev(warehouse.timezone)})`} />
+              <Summary label="Movement" value={load.direction === 'INBOUND' ? 'Inbound delivery' : 'Outbound pickup'} />
+              <Summary label="Equipment" value={`${TRAILER_LABEL[load.trailerType]}${load.hazmat ? ' · Hazmat' : ''}`} />
+              <Summary label="Truck" value={details.truckNumber} />
+              <Summary label="Driver" value={`${details.driverName} · ${details.driverPhone}`} />
+              {details.referenceNumber && <Summary label="PO / ASN" value={details.referenceNumber} />}
+              {details.palletCount && <Summary label="Pallets" value={details.palletCount} />}
+              <Summary
+                label="Request type"
+                value={waitlistMode ? 'Waitlist (auto-assign when a place frees up)' : repeatWeekly ? `Weekly series × ${weeks}` : 'Single appointment'}
+              />
             </div>
           )}
         </div>
 
-        {/* Wizard controls */}
-        <div className="flex items-center justify-between pt-6 border-t border-slate-800 mt-8 relative z-10">
-          <button
-            type="button"
-            onClick={step === 1 ? () => navigate('/vendor') : handleBack}
-            className="py-2.5 px-5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm font-semibold transition-all cursor-pointer"
-          >
-            {step === 1 ? 'Cancel' : 'Back'}
-          </button>
-
-          {step < 4 ? (
-            <button
-              type="button"
-              onClick={
-                step === 1 ? handleStep1Next :
-                step === 2 ? handleStep2Next :
-                handleStep3Next
-              }
-              className="py-2.5 px-6 rounded-xl bg-purple-600 hover:bg-purple-500 text-sm font-bold text-white transition-all cursor-pointer shadow-lg shadow-purple-900/20"
-            >
-              Continue
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={createBookingMutation.isPending}
-              onClick={() => createBookingMutation.mutate()}
-              className="py-2.5 px-6 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-bold text-white transition-all cursor-pointer shadow-lg shadow-purple-900/20"
-            >
-              {createBookingMutation.isPending ? 'Submitting Request...' : 'Confirm Request'}
-            </button>
-          )}
+        <div className="flex justify-between mt-8 pt-5 border-t border-slate-800">
+          <Button onClick={() => (step === 1 ? navigate('/vendor') : setStep((s) => s - 1))}>{step === 1 ? 'Cancel' : 'Back'}</Button>
+          <Button variant="primary" disabled={!canNext && step !== 4} onClick={next}>
+            {step === 4 ? (submit.isPending ? 'Submitting…' : waitlistMode ? 'Join waitlist' : 'Request appointment') : 'Continue'}
+          </Button>
         </div>
       </div>
     </div>
   );
 };
+
+const Summary: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
+  <div>
+    <p className="text-[11px] uppercase tracking-wider text-slate-500 font-bold">{label}</p>
+    <p className="text-slate-100 font-medium">{value}</p>
+  </div>
+);

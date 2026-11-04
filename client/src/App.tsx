@@ -9,8 +9,11 @@ import { PendingApproval } from './pages/PendingApproval';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
 import { VendorDashboard } from './pages/vendor/VendorDashboard';
 import { BookingWizard } from './pages/vendor/BookingWizard';
+import { GateSheet } from './pages/admin/GateSheet';
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
+});
 
 const LandingRedirect: React.FC = () => {
   const { user, isAuthenticated } = useAuth();
@@ -47,6 +50,7 @@ function App() {
             {/* Admin Protected Routes */}
             <Route element={<ProtectedRoute allowedRoles={['WAREHOUSE_ADMIN', 'SUPER_ADMIN']} />}>
               <Route path="/admin" element={<AdminDashboard />} />
+              <Route path="/admin/gate-sheet" element={<GateSheet />} />
             </Route>
 
             {/* Vendor Protected Routes */}

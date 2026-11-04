@@ -1,196 +1,229 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../api';
-import { format, parseISO } from 'date-fns';
+import { AppHeader } from '../../components/AppHeader';
 import { BookingStatusBadge } from '../../components/BookingStatusBadge';
 import { WarehouseAccessPanel } from '../../components/vendor/WarehouseAccessPanel';
+import { RescheduleModal } from '../../components/booking/RescheduleModal';
+import { Alert, Button, Card, Chip, Empty, Stat, Tabs, TierBadge } from '../../components/ui';
+import { type Booking, type CarrierScore, TRAILER_LABEL, errorMessage, fmtDate, fmtTime } from '../../lib/format';
+import { exportBookingsCsv } from '../../lib/export';
 
-interface Booking {
+interface WaitlistEntry {
   _id: string;
-  dockId: {
-    _id: string;
-    dockName: string;
-  } | null;
-  // warehouseId is populated by the backend; it may be an object or a bare string id
-  warehouseId: {
-    _id: string;
-    name: string;
-    address: string;
-    timezone?: string;
-  } | null;
-  truckNumber: string;
-  driverName: string;
-  driverPhone: string;
+  warehouseId: { name: string; timezone: string } | null;
+  dockId: { dockName: string } | null;
   startTime: string;
   endTime: string;
-  status: 'PENDING' | 'APPROVED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'REJECTED';
+  truckNumber: string;
+  trailerType: Booking['trailerType'];
+  status: 'WAITING' | 'FULFILLED' | 'CANCELLED' | 'EXPIRED';
+  createdAt: string;
 }
 
+const UPCOMING: Booking['status'][] = ['PENDING', 'APPROVED', 'CHECKED_IN', 'IN_PROGRESS'];
+
 export const VendorDashboard: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [tab, setTab] = useState('upcoming');
+  const [rescheduling, setRescheduling] = useState<Booking | null>(null);
+  const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
-  // Fetch Vendor's own bookings (warehouseId is populated via backend fix)
-  const { data: bookings = [], isLoading, refetch } = useQuery<Booking[]>({
+  const { data: bookings = [], isLoading } = useQuery<Booking[]>({
     queryKey: ['vendorBookings'],
-    queryFn: async () => {
-      const res = await api.get('/api/bookings');
-      return res.data.bookings;
+    queryFn: async () => (await api.get('/api/bookings')).data.bookings,
+    refetchInterval: 20000,
+  });
+  const { data: score } = useQuery<CarrierScore>({
+    queryKey: ['myScore'],
+    queryFn: async () => (await api.get('/api/vendors/me/score')).data.score,
+  });
+  const { data: waitlist = [] } = useQuery<WaitlistEntry[]>({
+    queryKey: ['vendorWaitlist'],
+    queryFn: async () => (await api.get('/api/waitlist')).data.entries,
+    refetchInterval: 20000,
+  });
+
+  const onError = (err: unknown) => setMessage({ kind: 'error', text: errorMessage(err) });
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['vendorBookings'] });
+    queryClient.invalidateQueries({ queryKey: ['vendorWaitlist'] });
+    queryClient.invalidateQueries({ queryKey: ['notifications'] });
+  };
+
+  const cancel = useMutation({
+    mutationFn: (id: string) => api.patch(`/api/bookings/${id}/status`, { status: 'CANCELLED' }),
+    onSuccess: () => {
+      refresh();
+      setMessage({ kind: 'success', text: 'Appointment cancelled. The slot has been released.' });
     },
+    onError,
+  });
+  const cancelSeries = useMutation({
+    mutationFn: (groupId: string) => api.patch(`/api/bookings/series/${groupId}/cancel`),
+    onSuccess: (res) => {
+      refresh();
+      setMessage({ kind: 'success', text: res.data.message });
+    },
+    onError,
+  });
+  const leaveWaitlist = useMutation({
+    mutationFn: (id: string) => api.delete(`/api/waitlist/${id}`),
+    onSuccess: () => {
+      refresh();
+      setMessage({ kind: 'success', text: 'Removed from waitlist' });
+    },
+    onError,
   });
 
-  // Cancel mutation with confirmation prompt
-  const cancelMutation = useMutation({
-    mutationFn: async (id: string) =>
-      api.patch(`/api/bookings/${id}/status`, { status: 'CANCELLED' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vendorBookings'] }),
-  });
-
-  const handleCancel = (id: string) => {
-    if (window.confirm('Cancel this booking? This cannot be undone.')) {
-      cancelMutation.mutate(id);
-    }
-  };
-
-  // Format a UTC ISO string to local time with timezone abbreviation
-  const formatLocalTime = (utcStr: string) => {
-    try {
-      const date = parseISO(utcStr);
-      const timeStr = format(date, 'MMM d, yyyy • hh:mm a');
-      const tzAbbr = new Intl.DateTimeFormat('en', { timeZoneName: 'short' })
-        .formatToParts(date)
-        .find((p) => p.type === 'timeZoneName')?.value ?? '';
-      return `${timeStr} ${tzAbbr}`.trim();
-    } catch {
-      return utcStr;
-    }
-  };
-
-  // Helper to resolve warehouse name/address from a possibly-populated or bare id field
-  const resolveWarehouse = (w: Booking['warehouseId']) => {
-    if (!w) return { name: 'N/A', address: 'N/A' };
-    if (typeof w === 'object' && w.name) return { name: w.name, address: w.address };
-    return { name: 'N/A', address: 'N/A' };
-  };
+  const upcoming = bookings.filter((b) => UPCOMING.includes(b.status));
+  const history = bookings.filter((b) => !UPCOMING.includes(b.status)).reverse();
+  const waiting = waitlist.filter((w) => w.status === 'WAITING');
+  const list = tab === 'upcoming' ? upcoming : history;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-6 lg:p-8">
-      {/* Header */}
-      <header className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-6 mb-8 gap-4">
-        <div>
-          <span className="text-xs font-bold uppercase tracking-wider text-purple-400">Carrier Portal</span>
-          <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-slate-100 to-slate-400 bg-clip-text text-transparent mt-1">
-            {user?.vendorCompany || 'Vendor Dashboard'}
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Logged in as: <span className="text-slate-200">{user?.username} ({user?.email})</span>
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate('/vendor/book')}
-            className="py-2.5 px-5 rounded-xl bg-purple-600 hover:bg-purple-500 text-sm font-bold text-white transition-all cursor-pointer shadow-lg shadow-purple-900/20 active:scale-98"
-          >
-            + Book Dock Slot
-          </button>
-          <button
-            onClick={logout}
-            className="py-2.5 px-4 rounded-xl bg-slate-900 border border-slate-800 hover:bg-slate-800 text-sm font-semibold transition-all cursor-pointer shadow-md"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
+      <AppHeader
+        eyebrow="Carrier portal"
+        title={user?.vendorCompany || 'Carrier dashboard'}
+        subtitle={<>Book and manage dock appointments · {user?.email}</>}
+        actions={
+          <Button variant="primary" onClick={() => navigate('/vendor/book')}>
+            + Book dock appointment
+          </Button>
+        }
+      />
 
-      {/* Main Content */}
-      <main className="max-w-6xl mx-auto">
+      <main className="max-w-7xl mx-auto space-y-6">
+        {message && (
+          <Alert kind={message.kind} onClose={() => setMessage(null)}>
+            {message.text}
+          </Alert>
+        )}
+
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+            <p className="text-[11px] uppercase tracking-wider font-bold text-slate-500">Your reliability score</p>
+            <div className="flex items-end gap-3 mt-1">
+              <span className="text-4xl font-extrabold">{score?.reliabilityScore ?? '—'}</span>
+              <TierBadge score={score} />
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1">
+              (on-time + ½ × late) ÷ (arrivals + no-shows). Warehouses see this when approving your requests.
+            </p>
+          </div>
+          <Stat label="On-time arrivals" value={score?.onTimeRate != null ? `${score.onTimeRate}%` : '—'} tone="good" />
+          <Stat label="No-shows" value={score?.noShows ?? 0} hint={score?.noShowRate != null ? `${score.noShowRate}% of due` : undefined} tone={score && score.noShows > 0 ? 'bad' : 'default'} />
+          <Stat label="Upcoming" value={upcoming.length} hint={`${waiting.length} on waitlist`} />
+        </div>
+
         <WarehouseAccessPanel />
 
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-              <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-              </svg>
-              My Scheduled Bookings
-            </h2>
-            <button
-              onClick={() => refetch()}
-              className="text-xs text-purple-400 hover:text-purple-300 font-semibold cursor-pointer"
-            >
-              Refresh List
-            </button>
-          </div>
+        <Card
+          title="My appointments"
+          actions={
+            <Button size="sm" onClick={() => exportBookingsCsv(bookings, Intl.DateTimeFormat().resolvedOptions().timeZone, 'my-appointments.csv')}>
+              Export CSV
+            </Button>
+          }
+        >
+          <Tabs
+            tabs={[
+              { id: 'upcoming', label: 'Upcoming', badge: upcoming.length },
+              { id: 'history', label: 'History' },
+              { id: 'waitlist', label: 'Waitlist', badge: waiting.length },
+            ]}
+            active={tab}
+            onChange={setTab}
+          />
 
-          {isLoading ? (
-            <p className="text-sm text-slate-500 text-center py-12">Loading bookings...</p>
-          ) : bookings.length === 0 ? (
-            <div className="text-center py-16">
-              <div className="w-16 h-16 bg-slate-950 border border-slate-800 rounded-2xl flex items-center justify-center text-slate-600 mx-auto mb-4">
-                <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <h3 className="text-md font-bold text-slate-300">No Bookings Found</h3>
-              <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                You haven't scheduled any dock arrivals yet. Click "Book Dock Slot" to reserve a timeslot.
-              </p>
-            </div>
+          {tab === 'waitlist' ? (
+            waitlist.length === 0 ? (
+              <Empty>No waitlist entries. When a slot is full, you can join its waitlist from the booking screen.</Empty>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="text-left text-[11px] uppercase text-slate-500">
+                  <tr><th className="py-2">Slot</th><th>Site / dock</th><th>Truck</th><th>Status</th><th /></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {waitlist.map((w) => (
+                    <tr key={w._id}>
+                      <td className="py-2.5">{fmtDate(w.startTime, w.warehouseId?.timezone)} · {fmtTime(w.startTime, w.warehouseId?.timezone)}</td>
+                      <td>{w.warehouseId?.name}<span className="block text-xs text-slate-500">{w.dockId?.dockName ?? 'Any compatible dock'}</span></td>
+                      <td>{w.truckNumber}<span className="block text-xs text-slate-500">{TRAILER_LABEL[w.trailerType]}</span></td>
+                      <td><Chip>{w.status === 'FULFILLED' ? 'Assigned ✓' : w.status.toLowerCase()}</Chip></td>
+                      <td className="text-right">
+                        {w.status === 'WAITING' && <Button size="sm" variant="danger" onClick={() => leaveWaitlist.mutate(w._id)}>Leave</Button>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          ) : isLoading ? (
+            <Empty>Loading…</Empty>
+          ) : list.length === 0 ? (
+            <Empty>{tab === 'upcoming' ? 'No upcoming appointments. Click “Book dock appointment” to schedule one.' : 'No past appointments yet.'}</Empty>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-slate-300">
-                <thead className="bg-slate-950 text-slate-400 text-xs uppercase font-bold tracking-wider">
+              <table className="w-full text-sm min-w-[860px]">
+                <thead className="text-left text-[11px] uppercase text-slate-500">
                   <tr>
-                    <th className="p-3 rounded-l-xl">Date &amp; Time</th>
-                    <th className="p-3">Warehouse / Address</th>
-                    <th className="p-3">Dock</th>
-                    <th className="p-3">Truck &amp; Driver</th>
-                    <th className="p-3">Status</th>
-                    <th className="p-3 rounded-r-xl text-right">Action</th>
+                    <th className="py-2">When (site time)</th><th>Site / dock</th><th>Truck / driver</th><th>Load</th><th>Ref</th><th>Status</th><th className="text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {bookings.map((booking) => {
-                    const wh = resolveWarehouse(booking.warehouseId);
+                  {list.slice(0, 200).map((b) => {
+                    const tz = b.warehouseId?.timezone;
+                    const mutable = b.status === 'PENDING' || b.status === 'APPROVED';
                     return (
-                      <tr key={booking._id} className="hover:bg-slate-800/35 transition-colors">
-                        <td className="p-3 font-semibold text-slate-200 whitespace-nowrap">
-                          {formatLocalTime(booking.startTime)}<br />
-                          <span className="text-xs font-normal text-slate-500">
-                            → {formatLocalTime(booking.endTime)}
-                          </span>
+                      <tr key={b._id} className="align-top">
+                        <td className="py-3">
+                          <span className="font-semibold">{fmtDate(b.startTime, tz)}</span>
+                          <span className="block text-xs text-slate-400">{fmtTime(b.startTime, tz)}–{fmtTime(b.endTime, tz)}</span>
+                          {b.recurrenceGroupId && <Chip className="mt-1">Weekly series</Chip>}
                         </td>
-                        <td className="p-3">
-                          <p className="font-semibold text-slate-200">{wh.name}</p>
-                          <p className="text-xs text-slate-500">{wh.address}</p>
+                        <td>{b.warehouseId?.name}<span className="block text-xs text-slate-500">{b.dockId?.dockName}</span></td>
+                        <td>{b.truckNumber}<span className="block text-xs text-slate-500">{b.driverName} · {b.driverPhone}</span></td>
+                        <td className="text-xs">
+                          {b.direction === 'INBOUND' ? 'Inbound' : 'Outbound'}
+                          <span className="block text-slate-500">{TRAILER_LABEL[b.trailerType]}{b.hazmat ? ' · Hazmat' : ''}{b.palletCount ? ` · ${b.palletCount} pallets` : ''}</span>
                         </td>
-                        <td className="p-3 font-semibold text-purple-400">{booking.dockId?.dockName || 'N/A'}</td>
-                        <td className="p-3">
-                          <p className="text-slate-200">Truck: <span className="font-semibold">{booking.truckNumber}</span></p>
-                          <p className="text-xs text-slate-400">{booking.driverName} ({booking.driverPhone})</p>
+                        <td className="text-xs text-slate-400">{b.referenceNumber ?? '—'}</td>
+                        <td>
+                          <BookingStatusBadge status={b.status} />
+                          {b.arrivalStatus && (
+                            <span className={`block text-[10px] mt-1 ${b.arrivalStatus === 'LATE' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                              {b.arrivalStatus === 'LATE' ? `Arrived ${b.lateByMinutes} min late` : 'Arrived on time'}
+                            </span>
+                          )}
+                          {b.cancelReason && <span className="block text-[10px] text-slate-500 mt-1 max-w-40">{b.cancelReason}</span>}
                         </td>
-                        <td className="p-3">
-                          <div className="flex flex-col items-start gap-1">
-                            <BookingStatusBadge status={booking.status} />
-                            {booking.status === 'REJECTED' && (
-                              <span className="text-[10px] text-red-400 max-w-[150px] leading-tight">
-                                Reason: Request rejected by warehouse administrator.
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="p-3 text-right">
-                          {(booking.status === 'PENDING' || booking.status === 'APPROVED') && (
-                            <button
-                              onClick={() => handleCancel(booking._id)}
-                              disabled={cancelMutation.isPending}
-                              className="py-1 px-2.5 rounded bg-slate-800 hover:bg-red-950 border border-slate-700 hover:border-red-800 text-xs text-slate-400 hover:text-red-400 transition-all cursor-pointer disabled:opacity-40"
-                            >
-                              Cancel
-                            </button>
+                        <td className="text-right space-x-1 whitespace-nowrap">
+                          {mutable && (
+                            <>
+                              <Button size="sm" onClick={() => setRescheduling(b)}>Reschedule</Button>
+                              <Button
+                                size="sm"
+                                variant="danger"
+                                onClick={() => window.confirm(`Cancel truck ${b.truckNumber} on ${fmtDate(b.startTime, tz)}?`) && cancel.mutate(b._id)}
+                              >
+                                Cancel
+                              </Button>
+                              {b.recurrenceGroupId && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => window.confirm('Cancel all upcoming appointments in this weekly series?') && cancelSeries.mutate(b.recurrenceGroupId!)}
+                                >
+                                  Cancel series
+                                </Button>
+                              )}
+                            </>
                           )}
                         </td>
                       </tr>
@@ -200,8 +233,20 @@ export const VendorDashboard: React.FC = () => {
               </table>
             </div>
           )}
-        </div>
+        </Card>
       </main>
+
+      {rescheduling && (
+        <RescheduleModal
+          booking={rescheduling}
+          asVendor
+          onClose={() => setRescheduling(null)}
+          onDone={(text) => {
+            setRescheduling(null);
+            setMessage({ kind: 'success', text });
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -18,6 +18,9 @@ services:
         sync: false # paste your MongoDB Atlas connection string in the Render dashboard
       - key: JWT_SECRET
         generateValue: true
+      # Seeds demo data on first start and enables the "Reset demo data" button. Set to "false" for real use.
+      - key: SEED_DEMO
+        value: "true"
       # Optional notification providers (leave unset to use in-app notifications only)
       - key: RESEND_API_KEY
         sync: false

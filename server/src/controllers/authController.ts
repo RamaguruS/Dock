@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { User } from '../models/User.js';
 import { Warehouse } from '../models/Warehouse.js';
 import { VendorAccess } from '../models/VendorAccess.js';
+import { audit } from '../services/audit.js';
+import { notifyWarehouseAdmins } from '../services/notifications.js';
 
 const objectIdString = z.string().refine((v) => Types.ObjectId.isValid(v), 'Invalid ID');
 
@@ -133,6 +135,21 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         // Don't leave a vendor account behind with no access requests
         await User.deleteOne({ _id: newUser._id });
         throw accessError;
+      }
+
+      for (const warehouseId of warehouseIds) {
+        await audit({
+          warehouseId,
+          action: 'VENDOR_ACCESS_REQUESTED',
+          entityType: 'VENDOR_ACCESS',
+          entityId: newUser._id,
+          message: `New carrier ${data.vendorCompany} (${email}) registered and requested access`,
+        });
+        await notifyWarehouseAdmins(warehouseId, {
+          type: 'VENDOR_ACCESS_REQUESTED',
+          title: 'New carrier access request',
+          message: `${data.vendorCompany} registered and wants to book dock appointments at your warehouse.`,
+        });
       }
 
       res.status(201).json({

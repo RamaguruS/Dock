@@ -7,12 +7,29 @@ export interface IOperatingHour {
   isOpen: boolean;
 }
 
+export interface IBlackoutDate {
+  date: string; // YYYY-MM-DD in the warehouse's local timezone
+  reason: string;
+}
+
+export const SLOT_DURATIONS = [15, 30, 60, 90] as const;
+
 export interface IWarehouse extends Document {
   name: string;
   address: string;
   adminId: Types.ObjectId;
   operatingHours: IOperatingHour[];
   timezone: string;
+  /** Length of one appointment slot in minutes (15 / 30 / 60 / 90). */
+  slotDurationMinutes: number;
+  /** Turnover gap between consecutive slots (trailer swap, dock cleaning). */
+  bufferMinutes: number;
+  /** A truck checking in later than this after its slot start counts as LATE. */
+  lateThresholdMinutes: number;
+  /** An APPROVED appointment not checked in this long after its start becomes NO_SHOW. */
+  noShowGraceMinutes: number;
+  /** Holidays / closures: no slots are offered on these local dates. */
+  blackoutDates: IBlackoutDate[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -49,6 +66,14 @@ const operatingHourSchema = new Schema<IOperatingHour>({
     default: true,
   },
 }, { _id: false });
+
+const blackoutDateSchema = new Schema<IBlackoutDate>(
+  {
+    date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+    reason: { type: String, required: true, trim: true, maxlength: 120 },
+  },
+  { _id: false }
+);
 
 const warehouseSchema = new Schema<IWarehouse>(
   {
@@ -87,6 +112,33 @@ const warehouseSchema = new Schema<IWarehouse>(
       type: String,
       required: [true, 'Timezone is required'],
       default: 'UTC',
+    },
+    slotDurationMinutes: {
+      type: Number,
+      enum: { values: [...SLOT_DURATIONS], message: 'Slot length must be 15, 30, 60 or 90 minutes' },
+      default: 60,
+    },
+    bufferMinutes: {
+      type: Number,
+      min: [0, 'Buffer cannot be negative'],
+      max: [120, 'Buffer cannot exceed 120 minutes'],
+      default: 0,
+    },
+    lateThresholdMinutes: {
+      type: Number,
+      min: 0,
+      max: 240,
+      default: 15,
+    },
+    noShowGraceMinutes: {
+      type: Number,
+      min: 5,
+      max: 480,
+      default: 60,
+    },
+    blackoutDates: {
+      type: [blackoutDateSchema],
+      default: [],
     },
   },
   {

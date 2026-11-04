@@ -10,7 +10,8 @@
     "start": "node dist/server.js",
     "create-super-admin": "tsx src/scripts/createSuperAdmin.ts",
     "migrate:vendor-access": "tsx src/scripts/migrateVendorAccess.ts",
-    "verify:critical": "tsx src/verify_critical_fixes.ts"
+    "verify:critical": "tsx src/verify_critical_fixes.ts",
+    "dev:demo": "tsx src/scripts/devDemo.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

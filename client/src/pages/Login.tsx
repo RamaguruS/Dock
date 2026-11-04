@@ -3,7 +3,14 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '../api';
+
+interface DemoInfo {
+  demoMode: boolean;
+  accounts?: { label: string; email: string; password: string }[];
+}
 
 const loginSchema = z.object({
   email: z.string().email('Please enter a valid email address'),
@@ -21,9 +28,17 @@ export const Login: React.FC = () => {
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors },
   } = useForm<LoginForm>({
     resolver: zodResolver(loginSchema),
+  });
+
+  const [params] = useSearchParams();
+  const { data: demo } = useQuery<DemoInfo>({
+    queryKey: ['demoInfo'],
+    queryFn: async () => (await api.get('/api/demo/info')).data,
+    retry: false,
   });
 
   const onSubmit = async (data: LoginForm) => {
@@ -60,6 +75,9 @@ export const Login: React.FC = () => {
         <h2 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-slate-100 to-slate-400 bg-clip-text text-transparent">
           Sign in to SmartDock
         </h2>
+        <p className="mt-2 text-sm text-slate-400 max-w-sm mx-auto">
+          Dock appointment scheduling &amp; yard management for warehouses, distribution centres and their carriers.
+        </p>
         <p className="mt-2 text-sm text-slate-400">
           Or{' '}
           <Link to="/register" className="font-semibold text-purple-400 hover:text-purple-300 transition-colors">
@@ -74,6 +92,11 @@ export const Login: React.FC = () => {
           <div className="absolute -top-24 -left-24 w-48 h-48 bg-purple-600/10 rounded-full blur-3xl" />
 
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 relative z-10">
+            {params.get('reset') && (
+              <div className="rounded-xl bg-sky-950/50 border border-sky-500/30 p-3 text-sm text-sky-300">
+                Demo data was regenerated. Please sign in again.
+              </div>
+            )}
             {apiError && (
               <div className="rounded-xl bg-red-950/50 border border-red-500/30 p-4 text-sm text-red-400 flex items-start space-x-2">
                 <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -130,6 +153,29 @@ export const Login: React.FC = () => {
             </div>
           </form>
         </div>
+
+        {demo?.demoMode && (
+          <div className="mt-6 bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
+            <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3">Demo accounts</p>
+            <div className="space-y-2">
+              {demo.accounts?.map((a) => (
+                <button
+                  key={a.email}
+                  type="button"
+                  onClick={() => {
+                    setValue('email', a.email);
+                    setValue('password', a.password);
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 hover:border-purple-500/50 cursor-pointer"
+                >
+                  <span className="block text-sm font-semibold text-slate-200">{a.label}</span>
+                  <span className="block text-xs text-slate-500">{a.email} · {a.password}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-3">Click an account to fill the form, then press Sign In.</p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { User } from '../models/User.js';
 import { Warehouse } from '../models/Warehouse.js';
 import { VendorAccess } from '../models/VendorAccess.js';
-import { logger } from '../config/logger.js';
+import { audit } from '../services/audit.js';
+import { notifyUser, notifyWarehouseAdmins } from '../services/notifications.js';
+import { computeCarrierScores } from '../services/reliability.js';
 
 const objectIdString = z.string().refine((v) => Types.ObjectId.isValid(v), 'Invalid ID');
 
@@ -51,8 +53,9 @@ export const getPendingVendors = async (req: Request, res: Response): Promise<vo
 
     // Keep the response shape the dashboard already uses: a list of vendor users,
     // enriched with the access request they belong to.
-    const vendors = requests
-      .filter((r) => r.vendorId) // skip requests whose vendor was deleted
+    const live = requests.filter((r) => r.vendorId); // skip requests whose vendor was deleted
+    const scores = await computeCarrierScores(live.map((r) => (r.vendorId as any)._id));
+    const vendors = live
       .map((r) => {
         const vendor = r.vendorId as any;
         const warehouse = r.warehouseId as any;
@@ -66,6 +69,7 @@ export const getPendingVendors = async (req: Request, res: Response): Promise<vo
           warehouseId: warehouse?._id,
           warehouseName: warehouse?.name,
           requestedAt: r.createdAt,
+          score: scores.get(vendor._id.toString()),
         };
       });
 
@@ -119,7 +123,23 @@ export const updateVendorStatus = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    logger.info(`[AUDIT] Vendor access updated: Vendor ${vendor._id} (${vendor.email}), Warehouse ${warehouseId}, Status ${parsed.data.status}, Action by: ${req.user?.userId} (${req.user?.role})`);
+    const warehouse = await Warehouse.findById(warehouseId).select('name');
+    await audit({
+      req,
+      warehouseId,
+      action: 'VENDOR_ACCESS_' + parsed.data.status,
+      entityType: 'VENDOR_ACCESS',
+      entityId: access._id,
+      message: `Carrier ${vendor.vendorCompany} (${vendor.email}) ${parsed.data.status.toLowerCase()} for ${warehouse?.name ?? 'warehouse'}`,
+    });
+    await notifyUser(vendor._id, {
+      type: 'VENDOR_ACCESS_' + parsed.data.status,
+      title: `Warehouse access ${parsed.data.status.toLowerCase()}`,
+      message:
+        parsed.data.status === 'APPROVED'
+          ? `${warehouse?.name ?? 'The warehouse'} approved your account. You can now book dock appointments there.`
+          : `${warehouse?.name ?? 'The warehouse'} declined your access request.`,
+    });
 
     res.status(200).json({
       message: `Vendor access has been ${parsed.data.status.toLowerCase()}`,
@@ -177,7 +197,20 @@ export const requestAccess = async (req: Request, res: Response): Promise<void> 
     const access = await VendorAccess.create({ vendorId: req.user?.userId, warehouseId, status: 'PENDING' });
     await access.populate('warehouseId', 'name address timezone');
 
-    logger.info(`[AUDIT] Vendor access requested: Vendor ${req.user?.userId}, Warehouse ${warehouseId}`);
+    const vendor = await User.findById(req.user?.userId).select('vendorCompany username');
+    await audit({
+      req,
+      warehouseId,
+      action: 'VENDOR_ACCESS_REQUESTED',
+      entityType: 'VENDOR_ACCESS',
+      entityId: access._id,
+      message: `Carrier ${vendor?.vendorCompany ?? vendor?.username} requested access`,
+    });
+    await notifyWarehouseAdmins(warehouseId, {
+      type: 'VENDOR_ACCESS_REQUESTED',
+      title: 'New carrier access request',
+      message: `${vendor?.vendorCompany ?? vendor?.username} wants to book dock appointments at your warehouse.`,
+    });
 
     res.status(201).json({ message: 'Access requested', access });
   } catch (error: any) {
@@ -186,5 +219,53 @@ export const requestAccess = async (req: Request, res: Response): Promise<void> 
       return;
     }
     res.status(500).json({ error: error.message });
+  }
+};
+
+/** Carrier scorecards for every carrier that has requested access to the admin's warehouse. */
+export const getCarrierScorecards = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const warehouseId = resolveAdminWarehouse(req, req.query.warehouseId);
+    if (!warehouseId) {
+      res.status(400).json({ error: 'A warehouse is required' });
+      return;
+    }
+    const access = await VendorAccess.find({ warehouseId }).populate('vendorId', 'username email vendorCompany createdAt');
+    const live = access.filter((a) => a.vendorId);
+    const ids = live.map((a) => (a.vendorId as any)._id);
+    const [atWarehouse, overall] = await Promise.all([
+      computeCarrierScores(ids, { warehouseId }),
+      computeCarrierScores(ids),
+    ]);
+
+    const carriers = live
+      .map((a) => {
+        const v = a.vendorId as any;
+        return {
+          vendorId: v._id,
+          username: v.username,
+          email: v.email,
+          vendorCompany: v.vendorCompany,
+          accessStatus: a.status,
+          accessId: a._id,
+          atWarehouse: atWarehouse.get(v._id.toString()),
+          overall: overall.get(v._id.toString()),
+        };
+      })
+      .sort((x, y) => (y.overall?.reliabilityScore ?? -1) - (x.overall?.reliabilityScore ?? -1));
+
+    res.status(200).json({ carriers });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+};
+
+/** The calling carrier's own reliability scorecard. */
+export const getMyScore = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const scores = await computeCarrierScores([req.user!.userId]);
+    res.status(200).json({ score: scores.get(req.user!.userId) });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
   }
 };

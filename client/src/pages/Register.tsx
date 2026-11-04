@@ -7,6 +7,14 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 
+const TIMEZONES: string[] = (() => {
+  try {
+    return (Intl as any).supportedValuesOf('timeZone') as string[];
+  } catch {
+    return ['UTC', 'Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'America/New_York', 'America/Chicago', 'America/Los_Angeles'];
+  }
+})();
+
 interface WarehouseOption {
   _id: string;
   name: string;
@@ -102,7 +110,7 @@ export const Register: React.FC = () => {
       warehouseIds: [],
       warehouseName: '',
       warehouseAddress: '',
-      timezone: 'UTC',
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     },
   });
 
@@ -245,8 +253,8 @@ export const Register: React.FC = () => {
                   {...formRegister('role')}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-sm text-slate-100 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
                 >
-                  <option value="VENDOR">Vendor (Truck Operator / Carrier)</option>
-                  <option value="WAREHOUSE_ADMIN">Warehouse Administrator</option>
+                  <option value="VENDOR">Carrier / transporter (books dock appointments)</option>
+                  <option value="WAREHOUSE_ADMIN">Warehouse / DC manager (owns docks)</option>
                 </select>
               </div>
             </div>
@@ -353,11 +361,9 @@ export const Register: React.FC = () => {
                       {...formRegister('timezone')}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 text-sm text-slate-100 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
                     >
-                      <option value="UTC">UTC</option>
-                      <option value="America/New_York">America/New_York (EST/EDT)</option>
-                      <option value="America/Chicago">America/Chicago (CST/CDT)</option>
-                      <option value="America/Denver">America/Denver (MST/MDT)</option>
-                      <option value="America/Los_Angeles">America/Los_Angeles (PST/PDT)</option>
+                      {TIMEZONES.map((tz) => (
+                        <option key={tz} value={tz}>{tz}</option>
+                      ))}
                     </select>
                   </div>
                 </div>

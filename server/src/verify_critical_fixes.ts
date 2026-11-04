@@ -225,6 +225,132 @@ async function main() {
 
     const crossTenant = await setStatus(t2._id, 'APPROVED', whB.token);
     check(crossTenant.status === 403, "warehouse B's admin cannot change warehouse A's booking", crossTenant.status);
+
+    // ------------------------------------------------------------------
+    console.log('\n5. Scheduling rules, dock types, maintenance, blackouts (warehouse B, UTC)');
+    const approveAtB = await call(A, 'PATCH', `/api/vendors/${vendorId}/status`, whB.token, { status: 'APPROVED' });
+    check(approveAtB.status === 200, 'warehouse B approves the carrier');
+
+    const settings = await call(A, 'PUT', '/api/warehouses/settings', whB.token, { slotDurationMinutes: 30, bufferMinutes: 15 });
+    check(settings.status === 200, 'admin sets 30-min slots with 15-min buffer');
+    const badSettings = await call(A, 'PUT', '/api/warehouses/settings', whB.token, { slotDurationMinutes: 45 });
+    check(badSettings.status === 400, 'unsupported slot length (45) is rejected');
+
+    const reeferDock = (await call(A, 'POST', '/api/docks', whB.token, { dockName: 'R1', direction: 'INBOUND', supportedTrailerTypes: ['REEFER'], maxCapacityPerHour: 1 })).data.dock._id;
+    const dryDock = (await call(A, 'POST', '/api/docks', whB.token, { dockName: 'D1', direction: 'BOTH', supportedTrailerTypes: ['DRY_VAN'], maxCapacityPerHour: 1 })).data.dock._id;
+
+    const dayB = today; // B is UTC, Mon–Fri 08:00–17:00
+    const at = (hhmm: string, date = dayB) => new Date(`${date}T${hhmm}:00.000Z`).toISOString();
+    const availReefer = await call(A, 'GET', `/api/bookings/availability?warehouseId=${whB.warehouseId}&date=${dayB}&trailerType=REEFER&direction=INBOUND`, vendorToken);
+    const reeferSlots = availReefer.data.docks?.[0]?.slots ?? [];
+    check(
+      availReefer.data.docks?.length === 1 && availReefer.data.docks[0].dockId === reeferDock,
+      'reefer load only sees the reefer dock (type matching)',
+      availReefer.data.docks?.map((d: any) => d.dockName)
+    );
+    check(
+      reeferSlots[0]?.localTime === '08:00 - 08:30' && reeferSlots[1]?.localTime === '08:45 - 09:15',
+      'slot grid follows 30-min slots + 15-min buffer',
+      reeferSlots.slice(0, 2).map((s: any) => s.localTime)
+    );
+
+    const bookB = (dockId: string, start: string, end: string, extra: Record<string, unknown> = {}, token = vendorToken, port = A) =>
+      call(port, 'POST', '/api/bookings', token, {
+        warehouseId: whB.warehouseId, dockId, truckNumber: 'TRK-B', driverName: 'Driver B', driverPhone: '555-0199',
+        startTime: start, endTime: end, direction: 'INBOUND', trailerType: 'REEFER', ...extra,
+      });
+
+    const wrongType = await bookB(reeferDock, at('08:00'), at('08:30'), { trailerType: 'DRY_VAN' });
+    check(wrongType.status === 400, 'dry-van truck cannot book the reefer-only dock', wrongType.data.error);
+
+    const maint = await call(A, 'POST', `/api/docks/${dryDock}/maintenance`, whB.token, { startTime: at('08:45'), endTime: at('09:15'), reason: 'Leveller repair' });
+    check(maint.status === 201, 'maintenance window scheduled');
+    const availDry = await call(A, 'GET', `/api/bookings/availability?warehouseId=${whB.warehouseId}&date=${dayB}&trailerType=DRY_VAN`, vendorToken);
+    check(availDry.data.docks[0].slots[1].reason === 'MAINTENANCE', 'maintenance blocks the overlapping slot');
+    const duringMaint = await bookB(dryDock, at('08:45'), at('09:15'), { trailerType: 'DRY_VAN' });
+    check(duringMaint.status === 400, 'booking during maintenance is rejected');
+
+    const nextDay = (() => {
+      let d = new Date(`${dayB}T00:00:00Z`);
+      do { d = new Date(d.getTime() + 86400000); } while ([0, 6].includes(d.getUTCDay()));
+      return d.toISOString().slice(0, 10);
+    })();
+    const blackout = await call(A, 'POST', '/api/warehouses/blackouts', whB.token, { date: nextDay, reason: 'Public holiday' });
+    check(blackout.status === 201, 'blackout date added');
+    const closedDay = await call(A, 'GET', `/api/bookings/availability?warehouseId=${whB.warehouseId}&date=${nextDay}`, vendorToken);
+    check(closedDay.data.closed && closedDay.data.message.includes('Public holiday'), 'blackout date is closed with its reason');
+    const onHoliday = await bookB(reeferDock, at('08:00', nextDay), at('08:30', nextDay));
+    check(onHoliday.status === 400, 'booking on a blackout date is rejected');
+
+    // ------------------------------------------------------------------
+    console.log('\n6. Recurring series, waitlist auto-assignment, rescheduling');
+    const series = await bookB(reeferDock, at('08:00'), at('08:30'), { recurrence: { weeks: 3 }, referenceNumber: 'PO-1', palletCount: 20 });
+    check(series.status === 201 && series.data.bookings.length === 3, 'weekly recurring series creates 3 appointments', series.data);
+    const seriesIds: string[] = (series.data.bookings ?? []).map((b: any) => b._id);
+
+    const v2reg = await call(A, 'POST', '/api/auth/register', undefined, {
+      username: 'carrier2', email: 'carrier2@example.com', password: 'password123', role: 'VENDOR', vendorCompany: 'Second Carrier', warehouseIds: [whB.warehouseId],
+    });
+    await call(A, 'PATCH', `/api/vendors/${v2reg.data.user._id}/status`, whB.token, { status: 'APPROVED' });
+    const v2token = (await call(A, 'POST', '/api/auth/login', undefined, { email: 'carrier2@example.com', password: 'password123' })).data.token;
+
+    const v2full = await bookB(reeferDock, at('08:00'), at('08:30'), {}, v2token, B);
+    check(v2full.status === 409, 'second carrier finds the reefer slot full');
+    const join = await call(B, 'POST', '/api/waitlist', v2token, {
+      warehouseId: whB.warehouseId, dockId: reeferDock, startTime: at('08:00'), endTime: at('08:30'),
+      trailerType: 'REEFER', direction: 'INBOUND', truckNumber: 'WAIT-1', driverName: 'Waiting Driver', driverPhone: '555-0777',
+    });
+    check(join.status === 201 && join.data.position === 1, 'second carrier joins the waitlist (position 1)', join.data);
+    const joinFree = await call(B, 'POST', '/api/waitlist', v2token, {
+      warehouseId: whB.warehouseId, dockId: reeferDock, startTime: at('09:30'), endTime: at('10:00'),
+      trailerType: 'REEFER', direction: 'INBOUND', truckNumber: 'WAIT-2', driverName: 'X', driverPhone: '555-0778',
+    });
+    check(joinFree.status === 409, 'cannot waitlist a slot that still has space');
+
+    const cancelFirst = await call(A, 'PATCH', `/api/bookings/${seriesIds[0]}/status`, vendorToken, { status: 'CANCELLED' });
+    check(cancelFirst.status === 200, 'first carrier cancels the first appointment of the series');
+    const v2bookings = (await call(B, 'GET', '/api/bookings', v2token)).data.bookings;
+    const assigned = v2bookings.find((b: any) => b.truckNumber === 'WAIT-1');
+    check(!!assigned && assigned.status === 'PENDING', 'freed slot auto-assigned to the waitlisted carrier', v2bookings);
+    const v2wait = (await call(B, 'GET', '/api/waitlist', v2token)).data.entries;
+    check(v2wait[0]?.status === 'FULFILLED', 'waitlist entry marked FULFILLED');
+    const v2notes = (await call(B, 'GET', '/api/notifications', v2token)).data.notifications;
+    check(v2notes.some((n: any) => n.type === 'WAITLIST_ASSIGNED'), 'carrier notified about the auto-assignment');
+
+    const resched = await call(B, 'PATCH', `/api/bookings/${assigned._id}/reschedule`, v2token, { startTime: at('09:30'), endTime: at('10:00') });
+    check(resched.status === 200 && resched.data.booking.rescheduleHistory.length === 1, 'carrier reschedules to 09:30 (history kept)', resched.data);
+    const reschedFull = await call(A, 'PATCH', `/api/bookings/${seriesIds[1]}/reschedule`, vendorToken, { startTime: at('09:30'), endTime: at('10:00') });
+    check(reschedFull.status === 409, 'rescheduling into a full slot is refused');
+
+    // ------------------------------------------------------------------
+    console.log('\n7. Gate check-in, arrival tracking, reliability, audit, analytics');
+    await call(A, 'PATCH', `/api/bookings/${assigned._id}/status`, whB.token, { status: 'APPROVED' });
+    const early = await call(A, 'PATCH', `/api/bookings/${assigned._id}/status`, whB.token, { status: 'NO_SHOW' });
+    check(early.status === 400, 'cannot mark no-show before the slot starts');
+    const checkin = await call(A, 'PATCH', `/api/bookings/${assigned._id}/status`, whB.token, { status: 'CHECKED_IN' });
+    check(checkin.data.booking?.arrivalStatus === 'ON_TIME' && !!checkin.data.booking?.checkedInAt, 'gate check-in records time + on-time arrival', checkin.data);
+    await call(B, 'PATCH', `/api/bookings/${assigned._id}/status`, whB.token, { status: 'IN_PROGRESS' });
+    const done = await call(A, 'PATCH', `/api/bookings/${assigned._id}/status`, whB.token, { status: 'COMPLETED' });
+    check(!!done.data.booking?.dockStartedAt && !!done.data.booking?.completedAt, 'dock start and completion timestamps recorded');
+    const score = (await call(A, 'GET', '/api/vendors/me/score', v2token)).data.score;
+    check(score?.reliabilityScore === 100 && score?.tier === 'A', 'reliability score computed (100, tier A)', score);
+
+    const seriesCancel = await call(A, 'PATCH', `/api/bookings/series/${series.data.recurrenceGroupId}/cancel`, vendorToken);
+    check(seriesCancel.data.cancelled === 2, 'remaining 2 appointments of the series cancelled together', seriesCancel.data);
+
+    const auditB = (await call(A, 'GET', '/api/audit-logs?limit=200', whB.token)).data;
+    const actions = new Set((auditB.logs ?? []).map((l: any) => l.action));
+    const expected = ['WAITLIST_AUTO_ASSIGNED', 'BOOKING_RESCHEDULED', 'BLACKOUT_ADDED', 'MAINTENANCE_SCHEDULED', 'SCHEDULING_SETTINGS_UPDATED', 'RECURRING_BOOKING_CREATED', 'BOOKING_STATUS_CHANGED'];
+    check(expected.every((a) => actions.has(a)), 'audit log records every action type', [...actions]);
+    const logsA = (await call(A, 'GET', '/api/audit-logs?limit=200', whA.token)).data.logs;
+    check(!logsA.some((l: any) => l.action === 'BLACKOUT_ADDED'), "warehouse A's admin cannot see warehouse B's audit log");
+
+    const analytics = await call(A, 'GET', `/api/analytics?from=${dayB}&to=${dayB}`, whB.token);
+    check(
+      analytics.status === 200 && analytics.data.kpis.totalAppointments >= 1 && analytics.data.perDock.length === 2 && analytics.data.heatmap.length === 7,
+      'analytics returns KPIs, per-dock utilization and heatmap',
+      analytics.data.kpis
+    );
   } finally {
     servers.forEach((s) => s.kill());
     await replSet.stop();
