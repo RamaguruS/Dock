@@ -4,6 +4,31 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate, Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '../api';
+
+interface WarehouseOption {
+  _id: string;
+  name: string;
+  address: string;
+  timezone: string;
+}
+
+/** Server validation errors can be a plain string or a zod `format()` object. */
+const toErrorMessage = (error: unknown, fallback: string): string => {
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const messages: string[] = [];
+    const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node._errors)) messages.push(...node._errors);
+      Object.entries(node).forEach(([key, value]) => key !== '_errors' && walk(value));
+    };
+    walk(error);
+    if (messages.length) return messages.join(' ');
+  }
+  return fallback;
+};
 
 const registerSchema = z.object({
   username: z.string().min(3, 'Username must be at least 3 characters'),
@@ -12,6 +37,7 @@ const registerSchema = z.object({
   role: z.enum(['WAREHOUSE_ADMIN', 'VENDOR']),
   // Vendor specific
   vendorCompany: z.string().optional(),
+  warehouseIds: z.array(z.string()).optional(),
   // Admin specific
   warehouseName: z.string().optional(),
   warehouseAddress: z.string().optional(),
@@ -23,6 +49,13 @@ const registerSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['vendorCompany'],
         message: 'Vendor company name is required',
+      });
+    }
+    if (!data.warehouseIds || data.warehouseIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['warehouseIds'],
+        message: 'Select at least one warehouse you want to book at',
       });
     }
   } else if (data.role === 'WAREHOUSE_ADMIN') {
@@ -56,7 +89,8 @@ export const Register: React.FC = () => {
     register: formRegister,
     handleSubmit,
     watch,
-    formState: { errors },
+    setValue,
+    formState: { errors, isSubmitted },
   } = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
     defaultValues: {
@@ -65,6 +99,7 @@ export const Register: React.FC = () => {
       email: '',
       password: '',
       vendorCompany: '',
+      warehouseIds: [],
       warehouseName: '',
       warehouseAddress: '',
       timezone: 'UTC',
@@ -72,6 +107,20 @@ export const Register: React.FC = () => {
   });
 
   const selectedRole = watch('role');
+  const selectedWarehouseIds = watch('warehouseIds') ?? [];
+
+  const { data: warehouses = [], isLoading: warehousesLoading } = useQuery<WarehouseOption[]>({
+    queryKey: ['public-warehouses'],
+    queryFn: async () => (await api.get('/api/warehouses')).data.warehouses,
+    enabled: selectedRole === 'VENDOR',
+  });
+
+  const toggleWarehouse = (id: string) => {
+    const next = selectedWarehouseIds.includes(id)
+      ? selectedWarehouseIds.filter((w) => w !== id)
+      : [...selectedWarehouseIds, id];
+    setValue('warehouseIds', next, { shouldValidate: isSubmitted });
+  };
 
   const onSubmit = async (data: RegisterForm) => {
     setIsLoading(true);
@@ -84,7 +133,7 @@ export const Register: React.FC = () => {
         navigate('/login');
       }, 2500);
     } catch (err: any) {
-      setApiError(err.response?.data?.error || 'Registration failed. Please try again.');
+      setApiError(toErrorMessage(err.response?.data?.error, 'Registration failed. Please try again.'));
     } finally {
       setIsLoading(false);
     }
@@ -220,6 +269,38 @@ export const Register: React.FC = () => {
                     <p className="mt-1 text-xs text-red-400 font-medium">{errors.vendorCompany.message}</p>
                   )}
                 </div>
+
+                <fieldset className="mt-4">
+                  <legend className="block text-sm font-semibold text-slate-300">
+                    Warehouses you want to book at
+                  </legend>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Each warehouse approves your access separately. You can request more later.
+                  </p>
+                  <div className="mt-2 max-h-48 overflow-y-auto space-y-2 rounded-xl border border-slate-800 bg-slate-950 p-3">
+                    {warehousesLoading && <p className="text-xs text-slate-500">Loading warehouses...</p>}
+                    {!warehousesLoading && warehouses.length === 0 && (
+                      <p className="text-xs text-slate-500">No warehouses are registered yet.</p>
+                    )}
+                    {warehouses.map((w) => (
+                      <label key={w._id} className="flex items-start gap-3 cursor-pointer text-sm">
+                        <input
+                          type="checkbox"
+                          checked={selectedWarehouseIds.includes(w._id)}
+                          onChange={() => toggleWarehouse(w._id)}
+                          className="mt-1 accent-purple-500"
+                        />
+                        <span>
+                          <span className="block text-slate-200 font-medium">{w.name}</span>
+                          <span className="block text-xs text-slate-500">{w.address}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {errors.warehouseIds && (
+                    <p className="mt-1 text-xs text-red-400 font-medium">{errors.warehouseIds.message}</p>
+                  )}
+                </fieldset>
               </div>
             )}
 

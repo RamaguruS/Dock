@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../../api';
 import { addDays, startOfDay, differenceInDays } from 'date-fns';
 import { DateStrip } from '../../components/booking/DateStrip';
+import { useVendorAccess } from '../../hooks/useVendorAccess';
 
 // Short timezone abbreviation in the browser's locale (e.g. "IST", "EST", "PDT")
 const BrowserTZ = Intl.DateTimeFormat('en', { timeZoneName: 'short' })
@@ -77,14 +78,11 @@ export const BookingWizard: React.FC = () => {
   // Queries
   // -----------------------------------------------------------------------
 
-  // Fetch list of warehouses for step 1
-  const { data: warehouses = [], isLoading: warehousesLoading } = useQuery<Warehouse[]>({
-    queryKey: ['warehouses'],
-    queryFn: async () => {
-      const res = await api.get('/api/warehouses');
-      return res.data.warehouses;
-    },
-  });
+  // Step 1 only offers warehouses that have approved this vendor
+  const { data: access = [], isLoading: warehousesLoading } = useVendorAccess();
+  const warehouses: Warehouse[] = access
+    .filter((a) => a.status === 'APPROVED')
+    .map((a) => a.warehouseId);
 
   const selectedWarehouse = warehouses.find((w) => w._id === selectedWarehouseId);
 
@@ -131,7 +129,8 @@ export const BookingWizard: React.FC = () => {
         setStep(2);
         setSelectedSlot(null);
       } else {
-        setErrorMsg(err.response?.data?.error || 'Booking submission failed. Please try again.');
+        const error = err.response?.data?.error;
+        setErrorMsg(typeof error === 'string' ? error : 'Booking submission failed. Please try again.');
       }
     },
   });
@@ -346,6 +345,11 @@ export const BookingWizard: React.FC = () => {
                 </label>
                 {warehousesLoading ? (
                   <p className="text-sm text-slate-500 mt-2">Loading warehouses...</p>
+                ) : warehouses.length === 0 ? (
+                  <p className="text-sm text-slate-400 mt-2">
+                    No warehouse has approved your account yet. Request access from your dashboard and wait for
+                    the warehouse administrator to approve it.
+                  </p>
                 ) : (
                   <select
                     id="warehouse"

@@ -5,6 +5,8 @@ export interface IDock extends Document {
   dockName: string;
   maxCapacityPerHour: number;
   isActive: boolean;
+  /** Bumped inside every booking transaction so concurrent bookings on the same dock conflict and retry. */
+  bookingLockVersion: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -32,6 +34,11 @@ const dockSchema = new Schema<IDock>(
       type: Boolean,
       required: true,
       default: true,
+    },
+    bookingLockVersion: {
+      type: Number,
+      default: 0,
+      select: false,
     },
   },
   {

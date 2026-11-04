@@ -175,7 +175,7 @@ export const AdminDashboard: React.FC = () => {
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['pendingVendors'] });
-      setSuccessMsg(`Vendor account has been successfully ${variables.status.toLowerCase()}`);
+      setSuccessMsg(`Vendor access to your warehouse has been ${variables.status.toLowerCase()}`);
     },
     onError: (err: any) => {
       setErrorMsg(err.response?.data?.error || 'Failed to update vendor status');

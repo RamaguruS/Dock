@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { Types } from 'mongoose';
 import { UserRole, User } from '../models/User.js';
+import { hasApprovedAccess } from '../models/VendorAccess.js';
 
 export interface JWTUser {
   userId: string;
@@ -59,24 +61,58 @@ export const requireRole = (roles: UserRole[]) => {
   };
 };
 
-export const requireApprovedVendor = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  if (!req.user) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
+/**
+ * Ensures the caller may act on the warehouse named in the request (body or query `warehouseId`).
+ * - SUPER_ADMIN: any warehouse
+ * - WAREHOUSE_ADMIN: only the warehouse in their JWT
+ * - VENDOR: active account AND an APPROVED VendorAccess record for that warehouse
+ *   (checked against the database on every request, so revocations apply immediately)
+ */
+export const requireWarehouseAccess = (source: 'body' | 'query') => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!req.user) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
 
-  if (req.user.role === 'VENDOR') {
+    const warehouseId = source === 'body' ? req.body?.warehouseId : req.query.warehouseId;
+    if (typeof warehouseId !== 'string' || !Types.ObjectId.isValid(warehouseId)) {
+      res.status(400).json({ error: 'A valid warehouseId is required' });
+      return;
+    }
+
+    const { role } = req.user;
+
+    if (role === 'SUPER_ADMIN') {
+      next();
+      return;
+    }
+
+    if (role === 'WAREHOUSE_ADMIN') {
+      if (req.user.warehouseId !== warehouseId) {
+        res.status(403).json({ error: 'Forbidden: You do not manage this warehouse' });
+        return;
+      }
+      next();
+      return;
+    }
+
     try {
-      const user = await User.findById(req.user.userId);
+      const user = await User.findById(req.user.userId).select('status');
       if (!user || user.status !== 'APPROVED') {
-        res.status(403).json({ error: 'Forbidden: Vendor account is pending approval or rejected' });
+        res.status(403).json({ error: 'Forbidden: Your account is not active' });
+        return;
+      }
+
+      if (!(await hasApprovedAccess(req.user.userId, warehouseId))) {
+        res.status(403).json({ error: 'Forbidden: You are not approved to book at this warehouse' });
         return;
       }
     } catch (error) {
-      res.status(500).json({ error: 'Internal Server Error during vendor check' });
+      res.status(500).json({ error: 'Internal Server Error during access check' });
       return;
     }
-  }
 
-  next();
+    next();
+  };
 };

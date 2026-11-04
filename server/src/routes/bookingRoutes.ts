@@ -7,14 +7,14 @@ import {
   getAvailabilitySummary,
   getCalendarSummary,
 } from '../controllers/bookingController.js';
-import { authenticateJWT, requireApprovedVendor, requireRole } from '../middleware/authMiddleware.js';
+import { authenticateJWT, requireWarehouseAccess, requireRole } from '../middleware/authMiddleware.js';
 
 const router = Router();
 
-router.post('/', authenticateJWT, requireApprovedVendor, createBooking);
+router.post('/', authenticateJWT, requireRole(['VENDOR']), requireWarehouseAccess('body'), createBooking);
 router.get('/', authenticateJWT, getBookings);
-router.get('/availability', authenticateJWT, requireApprovedVendor, getAvailability);
-router.get('/availability-summary', authenticateJWT, requireApprovedVendor, getAvailabilitySummary);
+router.get('/availability', authenticateJWT, requireWarehouseAccess('query'), getAvailability);
+router.get('/availability-summary', authenticateJWT, requireWarehouseAccess('query'), getAvailabilitySummary);
 router.get('/calendar-summary', authenticateJWT, requireRole(['WAREHOUSE_ADMIN', 'SUPER_ADMIN']), getCalendarSummary);
 router.patch('/:id/status', authenticateJWT, updateBookingStatus);
 

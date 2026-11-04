@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import { api } from '../../api';
 import { format, parseISO } from 'date-fns';
 import { BookingStatusBadge } from '../../components/BookingStatusBadge';
+import { WarehouseAccessPanel } from '../../components/vendor/WarehouseAccessPanel';
 
 interface Booking {
   _id: string;
@@ -106,6 +107,8 @@ export const VendorDashboard: React.FC = () => {
 
       {/* Main Content */}
       <main className="max-w-6xl mx-auto">
+        <WarehouseAccessPanel />
+
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">

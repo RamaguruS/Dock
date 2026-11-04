@@ -3,15 +3,19 @@ import { Types } from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
-import { User, IUser } from '../models/User.js';
+import { User } from '../models/User.js';
 import { Warehouse } from '../models/Warehouse.js';
+import { VendorAccess } from '../models/VendorAccess.js';
 
-// Registration Validation Schemas
+const objectIdString = z.string().refine((v) => Types.ObjectId.isValid(v), 'Invalid ID');
+
+// Registration Validation Schemas.
+// SUPER_ADMIN is intentionally NOT registrable through the public API —
+// create one with `npm run create-super-admin` on the server instead.
 const baseRegisterSchema = z.object({
   username: z.string().min(3).max(30),
   email: z.string().email(),
   password: z.string().min(6),
-  role: z.enum(['SUPER_ADMIN', 'WAREHOUSE_ADMIN', 'VENDOR']),
 });
 
 const warehouseAdminRegisterSchema = baseRegisterSchema.extend({
@@ -24,16 +28,15 @@ const warehouseAdminRegisterSchema = baseRegisterSchema.extend({
 const vendorRegisterSchema = baseRegisterSchema.extend({
   role: z.literal('VENDOR'),
   vendorCompany: z.string().min(1, 'Vendor company name is required'),
-});
-
-const superAdminRegisterSchema = baseRegisterSchema.extend({
-  role: z.literal('SUPER_ADMIN'),
+  warehouseIds: z
+    .array(objectIdString)
+    .min(1, 'Select at least one warehouse to request access to')
+    .max(50),
 });
 
 const registerSchema = z.discriminatedUnion('role', [
   warehouseAdminRegisterSchema,
   vendorRegisterSchema,
-  superAdminRegisterSchema,
 ]);
 
 const loginSchema = z.object({
@@ -101,8 +104,16 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         warehouse: newWarehouse,
       });
       return;
-    } else if (role === 'VENDOR') {
+    } else {
+      // VENDOR
       const data = parsed.data as z.infer<typeof vendorRegisterSchema>;
+      const warehouseIds = [...new Set(data.warehouseIds)];
+
+      const foundCount = await Warehouse.countDocuments({ _id: { $in: warehouseIds } });
+      if (foundCount !== warehouseIds.length) {
+        res.status(400).json({ error: 'One or more selected warehouses do not exist' });
+        return;
+      }
 
       const newUser = new User({
         username,
@@ -110,28 +121,22 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         passwordHash,
         role,
         vendorCompany: data.vendorCompany,
-        status: 'PENDING', // Vendors start as pending
+        status: 'APPROVED', // account is active; booking rights are granted per warehouse
       });
-
       await newUser.save();
 
-      res.status(201).json({
-        message: 'Vendor registration submitted. Awaiting approval by warehouse administration.',
-        user: newUser,
-      });
-      return;
-    } else {
-      // SUPER_ADMIN
-      const newUser = new User({
-        username,
-        email,
-        passwordHash,
-        role,
-      });
+      try {
+        await VendorAccess.insertMany(
+          warehouseIds.map((warehouseId) => ({ vendorId: newUser._id, warehouseId, status: 'PENDING' }))
+        );
+      } catch (accessError) {
+        // Don't leave a vendor account behind with no access requests
+        await User.deleteOne({ _id: newUser._id });
+        throw accessError;
+      }
 
-      await newUser.save();
       res.status(201).json({
-        message: 'Super Admin registered successfully',
+        message: 'Vendor registered. Each selected warehouse must approve your access before you can book there.',
         user: newUser,
       });
       return;
@@ -163,9 +168,9 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    if (user.role === 'VENDOR' && user.status !== 'APPROVED') {
+    if (user.status !== 'APPROVED') {
       res.status(403).json({
-        error: `Your account status is ${user.status}. Please wait for admin approval.`,
+        error: `Your account status is ${user.status}. Please contact an administrator.`,
         status: user.status
       });
       return;

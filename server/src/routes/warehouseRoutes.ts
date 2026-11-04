@@ -4,7 +4,8 @@ import { authenticateJWT, requireRole } from '../middleware/authMiddleware.js';
 
 const router = Router();
 
-router.get('/', authenticateJWT, listWarehouses);
+// Public: vendors pick warehouses to request access to while signing up (name/address/timezone only)
+router.get('/', listWarehouses);
 router.get('/my', authenticateJWT, requireRole(['WAREHOUSE_ADMIN']), getMyWarehouse);
 router.put('/operating-hours', authenticateJWT, requireRole(['WAREHOUSE_ADMIN', 'SUPER_ADMIN']), updateOperatingHours);
 

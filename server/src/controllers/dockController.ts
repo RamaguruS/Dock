@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { Types } from 'mongoose';
 import { Dock } from '../models/Dock.js';
+import { hasApprovedAccess } from '../models/VendorAccess.js';
 
 const createDockSchema = z.object({
   dockName: z.string().min(1, 'Dock name is required'),
@@ -67,8 +69,14 @@ export const getDocks = async (req: Request, res: Response): Promise<void> => {
       warehouseId = req.query.warehouseId as string;
     }
 
-    if (!warehouseId) {
-      res.status(400).json({ error: 'warehouseId query parameter or warehouse association is required' });
+    if (!warehouseId || !Types.ObjectId.isValid(warehouseId)) {
+      res.status(400).json({ error: 'A valid warehouseId query parameter or warehouse association is required' });
+      return;
+    }
+
+    // Vendors only see docks of warehouses that approved them
+    if (req.user?.role === 'VENDOR' && !(await hasApprovedAccess(req.user.userId, warehouseId))) {
+      res.status(403).json({ error: 'Forbidden: You are not approved to book at this warehouse' });
       return;
     }
 

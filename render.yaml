@@ -1,0 +1,31 @@
+# Render Blueprint: one web service that serves both the API and the built React client.
+# In Render: New + -> Blueprint -> pick this repository. Then fill in MONGO_URI when prompted.
+services:
+  - type: web
+    name: smartdock
+    runtime: node
+    plan: free
+    buildCommand: cd client && npm ci --include=dev && npm run build && cd ../server && npm ci --include=dev && npm run build
+    startCommand: cd server && node dist/server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: MONGO_URI
+        sync: false # paste your MongoDB Atlas connection string in the Render dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      # Optional notification providers (leave unset to use in-app notifications only)
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false

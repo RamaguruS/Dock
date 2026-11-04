@@ -1,7 +1,13 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
 export type UserRole = 'SUPER_ADMIN' | 'WAREHOUSE_ADMIN' | 'VENDOR';
-export type VendorStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+/**
+ * Account-level status. Vendor access to individual warehouses is tracked separately
+ * in the VendorAccess collection; this field only says whether the account may log in at all.
+ */
+export type AccountStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+/** @deprecated use AccountStatus */
+export type VendorStatus = AccountStatus;
 
 export interface IUser extends Document {
   username: string;
@@ -10,7 +16,7 @@ export interface IUser extends Document {
   role: UserRole;
   warehouseId?: Types.ObjectId;
   vendorCompany?: string;
-  status: VendorStatus;
+  status: AccountStatus;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -62,11 +68,9 @@ const userSchema = new Schema<IUser>(
       type: String,
       enum: {
         values: ['PENDING', 'APPROVED', 'REJECTED'],
-        message: '{VALUE} is not a valid vendor status',
+        message: '{VALUE} is not a valid account status',
       },
-      default: function (this: IUser) {
-        return this.role === 'VENDOR' ? 'PENDING' : 'APPROVED';
-      },
+      default: 'APPROVED',
     },
   },
   {
