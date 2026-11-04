@@ -70,7 +70,7 @@ export const GateSheet: React.FC = () => {
                 <td className="border border-gray-400 px-1.5 py-2 font-semibold whitespace-nowrap">{fmtTime(b.startTime, tz)}–{fmtTime(b.endTime, tz)}</td>
                 <td className="border border-gray-400 px-1.5">{b.dockId?.dockName}</td>
                 <td className="border border-gray-400 px-1.5">{b.vendorId?.vendorCompany}</td>
-                <td className="border border-gray-400 px-1.5 font-mono">{b.truckNumber}</td>
+                <td className="border border-gray-400 px-1.5 font-mono whitespace-nowrap">{b.truckNumber}</td>
                 <td className="border border-gray-400 px-1.5">{b.driverName}</td>
                 <td className="border border-gray-400 px-1.5 whitespace-nowrap">{b.driverPhone}</td>
                 <td className="border border-gray-400 px-1.5">

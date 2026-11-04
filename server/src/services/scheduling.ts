@@ -17,9 +17,21 @@ import { IWarehouse } from '../models/Warehouse.js';
 // Time helpers
 // ---------------------------------------------------------------------------
 
+// Creating an Intl.DateTimeFormat is expensive (ICU setup); cache one per timezone + pattern.
+const formatterCache = new Map<string, Intl.DateTimeFormat>();
+export function cachedFormatter(locale: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `${locale}|${JSON.stringify(options)}`;
+  let f = formatterCache.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, options);
+    formatterCache.set(key, f);
+  }
+  return f;
+}
+
 /** Convert a local date (YYYY-MM-DD) + HH:mm in an IANA timezone to the exact UTC instant (DST-safe). */
 export function localTimeToUTC(dateStr: string, timeStr: string, timezone: string): Date {
-  const formatter = new Intl.DateTimeFormat('en-US', {
+  const formatter = cachedFormatter('en-US', {
     timeZone: timezone,
     year: 'numeric',
     month: 'numeric',
@@ -50,7 +62,7 @@ export function localTimeToUTC(dateStr: string, timeStr: string, timezone: strin
 
 /** YYYY-MM-DD of an instant as seen in the given IANA timezone. */
 export function localDateString(instant: Date, timezone: string): string {
-  return new Intl.DateTimeFormat('en-CA', {
+  return cachedFormatter('en-CA', {
     timeZone: timezone,
     year: 'numeric',
     month: '2-digit',
@@ -61,7 +73,7 @@ export function localDateString(instant: Date, timezone: string): string {
 /** Local weekday index (0 = Sunday) and hour of an instant in a timezone. */
 export function localWeekdayHour(instant: Date, timezone: string): { weekday: number; hour: number } {
   const parts: Record<string, string> = {};
-  new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short', hour: 'numeric', hour12: false })
+  cachedFormatter('en-US', { timeZone: timezone, weekday: 'short', hour: 'numeric', hour12: false })
     .formatToParts(instant)
     .forEach((p) => { parts[p.type] = p.value; });
   const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday);

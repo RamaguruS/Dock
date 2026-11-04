@@ -8,6 +8,7 @@ import { Types } from 'mongoose';
 import { Notification, ChannelStatus } from '../models/Notification.js';
 import { User } from '../models/User.js';
 import { logger } from '../config/logger.js';
+import { cachedFormatter } from './scheduling.js';
 
 export interface NotifyInput {
   type: string;
@@ -104,7 +105,7 @@ export async function notifyWarehouseAdmins(warehouseId: string | Types.ObjectId
 
 /** "Tue 12 Nov, 09:00" in the warehouse's local time. */
 export function formatSlot(start: Date, timezone: string): string {
-  return new Intl.DateTimeFormat('en-GB', {
+  return cachedFormatter('en-GB', {
     timeZone: timezone,
     weekday: 'short',
     day: 'numeric',

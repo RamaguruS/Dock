@@ -91,16 +91,22 @@ const BarList: React.FC<{ rows: { label: string; value: number; display: string;
   const { bind, node } = useTooltip();
   const top = max ?? Math.max(1, ...rows.map((r) => r.value));
   return (
-    <div className="relative space-y-2" data-chart>
-      {rows.map((r) => (
-        <div key={r.label} className="grid grid-cols-[minmax(0,10rem)_1fr_3.5rem] items-center gap-3 text-xs outline-none" {...bind(<><b>{r.label}</b>: {r.display}{r.detail ? ` · ${r.detail}` : ''}</>)}>
-          <span className="truncate text-slate-300">{r.label}</span>
-          <div className="h-3 bg-slate-800/60 rounded">
-            <div className="h-3 rounded-r" style={{ width: `${Math.min(100, (r.value / top) * 100)}%`, background: SERIES, borderRadius: '0 4px 4px 0' }} />
-          </div>
-          <span className="text-right text-slate-300 font-semibold tabular-nums">{r.display}</span>
-        </div>
-      ))}
+    <div className="relative" data-chart>
+      {/* One shared grid so every bar starts at the same x position */}
+      <div className="grid grid-cols-[auto_minmax(4rem,1fr)_auto] items-center gap-x-3 gap-y-2 text-xs">
+        {rows.map((r) => {
+          const handlers = bind(<><b>{r.label}</b>: {r.display}{r.detail ? ` · ${r.detail}` : ''}</>);
+          return (
+            <React.Fragment key={r.label}>
+              <span className="truncate max-w-[11rem] text-slate-300">{r.label}</span>
+              <div className="h-3 bg-slate-800/60 rounded outline-none" {...handlers}>
+                <div className="h-3" style={{ width: `${Math.min(100, (r.value / top) * 100)}%`, background: SERIES, borderRadius: '0 4px 4px 0' }} />
+              </div>
+              <span className="text-right text-slate-300 font-semibold tabular-nums min-w-10">{r.display}</span>
+            </React.Fragment>
+          );
+        })}
+      </div>
       {node}
     </div>
   );
