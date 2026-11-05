@@ -33,3 +33,4 @@ Thumbs.db
 *.fls
 *.fdb_latexmk
 docs/analysis/rerun.log
+docs/slides/SPEAKER_NOTES.tex
